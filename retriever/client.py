@@ -1,11 +1,9 @@
-
-import socket 
+import socket
 import os
-import sys, pathlib
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-import helpermethods as H
+import sys
 
-#binary I/O helper functions (will be used in the LIST/GET/PUT)
+#binary I/O helper functions (used in LIST/GET/PUT)
+from retriever import protocol as H
 
 
 

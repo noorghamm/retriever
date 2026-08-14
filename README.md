@@ -13,5 +13,7 @@ Phase 0 — baseline imported.
 
 ## Usage
 
-    python3 server/server.py <port>
-    python3 client/client.py <server_ip> <port> <list|get|put> [filename]
+Run from the repository root:
+
+    python3 -m retriever.server <port>
+    python3 -m retriever.client <server_ip> <port> <list|get|put> [filename]

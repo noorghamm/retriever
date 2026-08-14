@@ -1,12 +1,9 @@
 import sys
-
 import os
-
 import socket
-#binary I/O helper functions (will be used in the LIST/GET/PUT)
-import sys, pathlib
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-import helpermethods as H
+
+#binary I/O helper functions (used in LIST/GET/PUT)
+from retriever import protocol as H
 
 #function that creates a tcp socket and binds it to an ip port
 def create_server_socket(port):

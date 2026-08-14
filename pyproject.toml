@@ -1,0 +1,14 @@
+[project]
+name = "retriever"
+version = "0.1.0"
+description = "File transfer client and server on raw TCP sockets, with a custom binary wire protocol"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["retriever"]
