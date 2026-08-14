@@ -37,7 +37,7 @@ def handle_client(cli_sock,cli_addr):
     """
     try:
         #read the first unsigned integer code, 0=LIST, 1=GET, 2=PUT
-        code = H.recv_8units(cli_sock)
+        code = H.recv_u8(cli_sock)
 
         if code == 0:  #LIST
             handle_list(cli_sock, cli_addr)
@@ -45,28 +45,28 @@ def handle_client(cli_sock,cli_addr):
         
         elif code == 1: #GET
             #client sends a 2 byte number(length of file name) to the server 
-            file_name_len = H.recv_16units(cli_sock)
+            file_name_len = H.recv_u16(cli_sock)
             #calls helper function to read until it has file_name_len bytes. 
             file_name = H.read_exact_bytes(cli_sock,file_name_len).decode("utf-8") #filename bytes are converted to a python string
             handle_get(cli_sock,cli_addr,file_name)
             return
         elif code == 2: #PUT
-            file_name_len = H.recv_16units(cli_sock)
+            file_name_len = H.recv_u16(cli_sock)
             file_name = H.read_exact_bytes(cli_sock,file_name_len).decode("utf-8")
-            file_size = H.recv_64units(cli_sock)
+            file_size = H.recv_u64(cli_sock)
             handle_put(cli_sock,cli_addr,file_name,file_size)
             return
         else:
-            H.send_8units(cli_sock,1)
-            H.send_64units(cli_sock,0)
+            H.send_u8(cli_sock,1)
+            H.send_u64(cli_sock,0)
             print(" {}:{} | UNKNOWN({}) | bad code".format(cli_addr[0],cli_addr[1],code))
 
     except (ConnectionError, ConnectionResetError) as e:
         print(f"{cli_addr[0]}:{cli_addr[1]} | CLIENT_DISCONNECT | {e}")
     except Exception as e:
         try:
-            H.send_8units(cli_sock,2)
-            H.send_64units(cli_sock,0)
+            H.send_u8(cli_sock,2)
+            H.send_u64(cli_sock,0)
         except Exception as e:
             pass
         print("{}:{} |INTERNAL | {}".format(cli_addr[0],cli_addr[1],e))
@@ -80,15 +80,15 @@ def handle_list(cli_sock,cli_addr):
         names = os.listdir(".")
         #encode converts each filename (string) into bytes, join null byte is used to seperate them
         payload = b"\0".join(n.encode("utf-8") for n in names)
-        H.send_8units(cli_sock,0)
-        H.send_64units(cli_sock,len(payload))
+        H.send_u8(cli_sock,0)
+        H.send_u64(cli_sock,len(payload))
         if payload:
             cli_sock.sendall(payload)
         print("{}:{} | LIST | status=ok".format(cli_addr[0],cli_addr[1]))
     except Exception as e:
         try:
-            H.send_8units(cli_sock,2)
-            H.send_64units(cli_sock,0)
+            H.send_u8(cli_sock,2)
+            H.send_u64(cli_sock,0)
         except Exception:
             pass
         print("{}:{} | LIST | status=fail {}".format(cli_addr[0],cli_addr[1],e))
@@ -97,20 +97,20 @@ def handle_list(cli_sock,cli_addr):
 def handle_get(cli_sock,cli_addr,filename):
     try:
         if not H.check_filename(filename):
-            H.send_8units(cli_sock,1)
-            H.send_64units(cli_sock,0)
+            H.send_u8(cli_sock,1)
+            H.send_u64(cli_sock,0)
             print("{}:{} | GET {} | status=fail:bad_name".format(cli_addr[0],cli_addr[1],filename))
             return
         
         if not os.path.exists(filename) or not os.path.isfile(filename):
-            H.send_8units(cli_sock,1)
-            H.send_64units(cli_sock,0)
+            H.send_u8(cli_sock,1)
+            H.send_u64(cli_sock,0)
             print("{}:{} | GET |{}| status=fail:not_found".format(cli_addr[0],cli_addr[1],filename))
             return
         
         size = os.path.getsize(filename)
-        H.send_8units(cli_sock,0)
-        H.send_64units(cli_sock,size)
+        H.send_u8(cli_sock,0)
+        H.send_u64(cli_sock,size)
 
         with open(filename, "rb") as f:
             while True:
@@ -121,8 +121,8 @@ def handle_get(cli_sock,cli_addr,filename):
         print("{}:{}|GET|{}| status=ok".format(cli_addr[0],cli_addr[1],filename))
     except Exception as e:
         try:
-            H.send_8units(cli_sock,2)
-            H.send_64units(cli_sock,0)
+            H.send_u8(cli_sock,2)
+            H.send_u64(cli_sock,0)
         except Exception:
             pass
         print("{}:{}|GET | {} | status = fail: {}".format(cli_addr[0], cli_addr[1],filename,e))
@@ -131,21 +131,21 @@ def handle_put(cli_sock, cli_addr, filename, file_size):
     try:
         #validate file name
         if not H.check_filename(filename):
-            H.send_8units(cli_sock,1)
+            H.send_u8(cli_sock,1)
             print("{}:{}| PUT | {} satus=fail:bad_name".format(cli_addr[0], cli_addr[1], filename))
             return
             
         #checks if it is an image
         
         if not H.is_image(filename):
-            H.send_8units(cli_sock,1)
+            H.send_u8(cli_sock,1)
             print("{}:{}| PUT | {} | status=fail:not_image".format(cli_addr[0],cli_addr[1],filename))
             return
         need = min(8,file_size)
         head = H.read_exact_bytes(cli_sock,need)
         
         if not (H.is_jpeg_header(head) or H.is_png_header(head)):
-            H.send_8units(cli_sock,1)
+            H.send_u8(cli_sock,1)
             print("{}:{} | PUT |{}| status=fail:not_image".format(cli_addr[0],cli_addr[1],filename))
             return
 
@@ -153,7 +153,7 @@ def handle_put(cli_sock, cli_addr, filename, file_size):
         try:
             out = open(filename,"xb")
         except FileExistsError:
-            H.send_8units(cli_sock,1)
+            H.send_u8(cli_sock,1)
             print("{}:{} | PUT| {} | status=fail:file exist".format(cli_addr[0],cli_addr[1],filename))
             return
         written =0
@@ -166,7 +166,7 @@ def handle_put(cli_sock, cli_addr, filename, file_size):
                 out.write(chunk)
                 written +=len(chunk)
 
-        H.send_8units(cli_sock,0)
+        H.send_u8(cli_sock,0)
         print("{}:{} | PUT |{} | OK: {}B".format(cli_addr[0],cli_addr[1],filename,written))
 
     except Exception as e:
@@ -179,7 +179,7 @@ def handle_put(cli_sock, cli_addr, filename, file_size):
             print(f"Cleanup failed: {cleanup_e}")
             
         try:
-            H.send_8units(cli_sock,2)
+            H.send_u8(cli_sock,2)
         except Exception:
             pass
         print("{}:{}| PUT | {} | status=fail: {}".format(cli_addr[0],cli_addr[1],filename,e))

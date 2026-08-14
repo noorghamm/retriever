@@ -12,9 +12,9 @@ from retriever import protocol as H
 
 def do_list(sock):
     """ask for directory listing over sock"""
-    H.send_8units(sock,0) #send request code 0=list in my binary protocol
-    response = H.recv_8units(sock) #reads status code from server (0-OK, 1-bad request, 2-internal error)
-    length = H.recv_64units(sock) #reads 8 bytes u64 (how many bytes of payload coming next)
+    H.send_u8(sock,0) #send request code 0=list in my binary protocol
+    response = H.recv_u8(sock) #reads status code from server (0-OK, 1-bad request, 2-internal error)
+    length = H.recv_u64(sock) #reads 8 bytes u64 (how many bytes of payload coming next)
     #if length is >0 read exactly that many bytes from socket in data, else data is empty binary
     data = H.read_exact_bytes(sock,length) if length > 0 else b"" 
 
@@ -37,12 +37,12 @@ def do_get(sock,filename):
     """function that requests a file from server and saves it locally with the same name"""
     filename_bytes = filename.encode("utf-8")
 
-    H.send_8units(sock,1) #send request code 1 as single byte (1 is get)
-    H.send_16units(sock, len(filename_bytes)) #send a 2 byte length for filename (tells server how many bytes to read for next name)
+    H.send_u8(sock,1) #send request code 1 as single byte (1 is get)
+    H.send_u16(sock, len(filename_bytes)) #send a 2 byte length for filename (tells server how many bytes to read for next name)
     sock.sendall(filename_bytes) #send the actual filename bytes
 
-    response = H.recv_8units(sock) #reads server status
-    size = H.recv_64units(sock) #reads file size
+    response = H.recv_u8(sock) #reads server status
+    size = H.recv_u64(sock) #reads file size
     peer = sock.getpeername()
 
     #responce == 0 -- > OK . 1,2 ---> bad name, not found, error etc
@@ -104,13 +104,13 @@ def do_put(sock,filename, new_name=None):
     #encode filename from bytes to string
     filename_bytes = remote.encode("utf-8")
     #send request code 2 = put
-    H.send_8units(sock,2)
+    H.send_u8(sock,2)
     #send 2 bytes telling the server how many bytes are coming
-    H.send_16units(sock,len(filename_bytes))
+    H.send_u16(sock,len(filename_bytes))
     #send the filename bytes raw
     sock.sendall(filename_bytes)
     #send 8 byte filesize so the server knows how many data bytes to read
-    H.send_64units(sock,file_size)
+    H.send_u64(sock,file_size)
 
     
 
@@ -122,7 +122,7 @@ def do_put(sock,filename, new_name=None):
             sock.sendall(chunk)
 
 
-    response = H.recv_8units(sock)
+    response = H.recv_u8(sock)
     
 
     if response ==0:

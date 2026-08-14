@@ -15,7 +15,7 @@ def read_exact_bytes(sock,n):
     return data
 
 
-def send_8units(sock,value):
+def send_u8(sock,value):
     """ sends a single unsigned 1 byte( 8 bits)  integer, 
     takes socket and numeric label (value) )"""
     #makes sure its 1 byte only
@@ -23,27 +23,27 @@ def send_8units(sock,value):
         raise ValueError("send_u8: value must be between 0 and 255")
     sock.sendall(value.to_bytes(1, "big"))  #converts integer to 1 byte, "big" refers to it being big-endian
 
-def recv_8units(sock):
+def recv_u8(sock):
     """Recives a 1 byte integer from the socket and return it as an int"""
     return int.from_bytes(read_exact_bytes(sock,1),"big")
 
-def send_16units(sock, value):
+def send_u16(sock, value):
     """sends an unsigned 2 bytes (16 bit)  integer through the socket"""
     if not ( 0 <= value <= 65535):
         raise ValueError("send_u16: value must be between 0 and 65,535")
     sock.sendall(value.to_bytes(2, "big"))
 
-def recv_16units(sock):
+def recv_u16(sock):
     """Recive an unsigned 2 bytes integer from the socket and return it as an int"""
     return int.from_bytes(read_exact_bytes(sock,2),"big")
 
-def send_64units(sock,value):
+def send_u64(sock,value):
     """send an unsigned 8 bytes (64 bits) integer through the socket """
     if not (0 <= value <= 18446744073709551615):
         raise ValueError ("send_u64 : value must be between 0 and 18,446,744,073,709,551,615")
     sock.sendall(value.to_bytes(8,"big"))
 
-def recv_64units(sock):
+def recv_u64(sock):
     """Recives an 8 byte unsigned integer from the socket and return it"""
     return int.from_bytes(read_exact_bytes(sock,8),"big")
 
