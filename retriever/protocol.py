@@ -4,6 +4,108 @@ import os
 #seconds either side waits on a silent peer before giving up
 SOCKET_TIMEOUT = 30
 
+#---------------------------------------------------------------------------
+#v2 framing (docs/PROTOCOL.md "Version 2")
+#---------------------------------------------------------------------------
+
+MAGIC = b"RTRV"
+VERSION = 2
+HEADER_SIZE = 14  #4 magic + 1 version + 1 type + 8 payload_len
+
+#frame types
+T_LIST = 0x00
+T_GET = 0x01
+T_PUT = 0x02
+T_HELLO = 0x10
+T_OK = 0x80
+T_ERROR = 0x81
+
+#error reason codes
+E_BAD_NAME = 1
+E_NOT_FOUND = 2
+E_ALREADY_EXISTS = 3
+E_MALFORMED = 4
+E_UNSUPPORTED_VERSION = 5
+E_INTERNAL = 6
+
+#max payload per frame type; None means the caller streams the payload
+#itself (GET reply bodies) and must not read it through read_frame
+PAYLOAD_CAPS = {
+    T_HELLO: 0,
+    T_LIST: 0,
+    T_GET: 64 * 1024,
+    T_PUT: 64 * 1024,
+    T_OK: 64 * 1024,
+    T_ERROR: 64 * 1024,
+}
+
+
+class FrameError(Exception):
+    """The peer violated the v2 framing spec. Carries the reason code
+    the other side should be told about."""
+
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
+
+
+def write_frame(sock, frame_type, payload=b""):
+    """Send one v2 frame: 14-byte header followed by the payload."""
+    header = MAGIC + bytes([VERSION, frame_type]) + len(payload).to_bytes(8, "big")
+    sock.sendall(header + payload)
+
+
+def read_frame_header(sock):
+    """Read and validate a 14-byte v2 header. Returns (frame_type, payload_len).
+
+    Raises FrameError on wrong magic/version, unknown type, or a payload
+    length over the cap for that type. Does not read the payload, so GET
+    reply bodies can be streamed by the caller.
+    """
+    header = read_exact_bytes(sock, HEADER_SIZE)
+    if header[:4] != MAGIC:
+        raise FrameError(E_UNSUPPORTED_VERSION, "bad magic: not a retriever v2 peer")
+    if header[4] != VERSION:
+        raise FrameError(E_UNSUPPORTED_VERSION, f"unsupported version {header[4]}")
+    frame_type = header[5]
+    if frame_type not in PAYLOAD_CAPS:
+        raise FrameError(E_MALFORMED, f"unknown frame type 0x{frame_type:02X}")
+    payload_len = int.from_bytes(header[6:14], "big")
+    return frame_type, payload_len
+
+
+def read_frame(sock):
+    """Read one complete capped frame. Returns (frame_type, payload).
+
+    Enforces the per-type payload cap, so never use this to receive a GET
+    reply body; use read_frame_header and stream instead.
+    """
+    frame_type, payload_len = read_frame_header(sock)
+    if payload_len > PAYLOAD_CAPS[frame_type]:
+        raise FrameError(
+            E_MALFORMED,
+            f"payload of {payload_len} bytes exceeds cap for type 0x{frame_type:02X}",
+        )
+    payload = read_exact_bytes(sock, payload_len) if payload_len else b""
+    return frame_type, payload
+
+
+def pack_error(reason, message=""):
+    """Build an ERROR frame payload: u8 reason + u16 msg_len + UTF-8 text."""
+    msg = message.encode("utf-8")
+    return bytes([reason]) + len(msg).to_bytes(2, "big") + msg
+
+
+def unpack_error(payload):
+    """Parse an ERROR frame payload. Returns (reason, message)."""
+    if len(payload) < 3:
+        raise FrameError(E_MALFORMED, "error payload shorter than 3 bytes")
+    reason = payload[0]
+    msg_len = int.from_bytes(payload[1:3], "big")
+    if len(payload) != 3 + msg_len:
+        raise FrameError(E_MALFORMED, "error payload length does not match msg_len")
+    return reason, payload[3:].decode("utf-8")
+
 
 def read_exact_bytes(sock,n):
     """read exactly n bytes from socket,
