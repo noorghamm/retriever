@@ -1,6 +1,9 @@
 import socket
 import os
 
+#seconds either side waits on a silent peer before giving up
+SOCKET_TIMEOUT = 30
+
 
 def read_exact_bytes(sock,n):
     """read exactly n bytes from socket,

@@ -141,6 +141,8 @@ def do_put(sock,filename, new_name=None):
 def create_client_socket(server_ip, port):
     cli_sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
     #creating the client socket (TCP snd IPv4)
+    #applies to connect and every later recv: a silent server can't hang us
+    cli_sock.settimeout(H.SOCKET_TIMEOUT)
     print("Connecting |  host = {} | port = {}".format(server_ip,port))
     #connecting the client to the server IP and Port
     cli_sock.connect((server_ip,port))

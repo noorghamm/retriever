@@ -61,6 +61,8 @@ def handle_client(cli_sock,cli_addr):
             H.send_u64(cli_sock,0)
             print(" {}:{} | UNKNOWN({}) | bad code".format(cli_addr[0],cli_addr[1],code))
 
+    except socket.timeout:
+        print(f"{cli_addr[0]}:{cli_addr[1]} | TIMEOUT | no data for {H.SOCKET_TIMEOUT}s")
     except (ConnectionError, ConnectionResetError) as e:
         print(f"{cli_addr[0]}:{cli_addr[1]} | CLIENT_DISCONNECT | {e}")
     except Exception as e:
@@ -199,6 +201,9 @@ def start_server(port):
                 # accept() takes the first request from the queue and processes it.
                 # If there is no request, wait until a new client connects.
                 cli_sock, cli_addr = srv_sock.accept()
+
+                #a silent peer must not hang the sequential server
+                cli_sock.settimeout(H.SOCKET_TIMEOUT)
 
                 # cli_addr is a tuple (IP, port)
                 print("{}:{} | CONNECTED".format(cli_addr[0], cli_addr[1]))

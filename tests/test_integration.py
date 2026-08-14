@@ -128,3 +128,23 @@ def test_get_leaves_no_partial_file_when_connection_dies(tmp_path, monkeypatch):
 
     leftovers = [p.name for p in tmp_path.iterdir()]
     assert leftovers == [], f"dead GET left files behind: {leftovers}"
+
+
+def test_server_times_out_a_stalled_client(server_port, monkeypatch):
+    """A client that connects and sends nothing must not hang the server.
+
+    Regression test: v1 had no socket timeouts, so one silent client
+    blocked the sequential server forever.
+    """
+    monkeypatch.setattr(H, "SOCKET_TIMEOUT", 0.5)
+
+    with socket.create_connection(("127.0.0.1", server_port), timeout=5) as sock:
+        sock.settimeout(3)
+        # send nothing; the server should give up on us, reply or close
+        data = sock.recv(64)   # raises socket.timeout if the server hangs
+
+    # server either closed on us (b"") or sent an error frame; both prove
+    # it did not hang. Afterwards it must still serve the next client.
+    status, names = _list(server_port)
+    assert status == 0
+    assert names == set()
