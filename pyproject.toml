@@ -12,3 +12,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["retriever"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
