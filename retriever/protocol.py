@@ -4,15 +4,14 @@ import os
 
 def read_exact_bytes(sock,n):
     """read exactly n bytes from socket,
-    data is an empty byte string,
-      keeps reading until read full n bytes data """
-    data = b""   #empty byte string
+    keeps reading until it has all n bytes"""
+    data = bytearray()
     while len(data) < n:
         chunk = sock.recv(n-len(data))
         if not chunk:
             raise ConnectionError("Connection closed early")
         data += chunk
-    return data
+    return bytes(data)
 
 
 def send_u8(sock,value):
