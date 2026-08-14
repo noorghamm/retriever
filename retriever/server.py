@@ -128,6 +128,8 @@ def handle_get(cli_sock,cli_addr,filename):
         print("{}:{}|GET | {} | status = fail: {}".format(cli_addr[0], cli_addr[1],filename,e))
 
 def handle_put(cli_sock, cli_addr, filename, file_size):
+    out = None
+    created = False   #only True once WE created the file, so cleanup never deletes a pre-existing one
     try:
         #validate file name
         if not H.check_filename(filename):
@@ -156,6 +158,7 @@ def handle_put(cli_sock, cli_addr, filename, file_size):
             H.send_u8(cli_sock,1)
             print("{}:{} | PUT| {} | status=fail:file exist".format(cli_addr[0],cli_addr[1],filename))
             return
+        created = True
         written =0
         with out:
             out.write(head)
@@ -171,13 +174,13 @@ def handle_put(cli_sock, cli_addr, filename, file_size):
 
     except Exception as e:
         try:
-            if 'out' in locals() and not out.closed:
+            if out is not None and not out.closed:
                 out.close()
-            if os.path.exists(filename):
+            if created and os.path.exists(filename):
                 os.remove(filename)
-        except Exception as e:
-            print(f"Cleanup failed: {cleanup_e}")
-            
+        except Exception as cleanup_err:
+            print(f"Cleanup failed: {cleanup_err}")
+
         try:
             H.send_u8(cli_sock,2)
         except Exception:

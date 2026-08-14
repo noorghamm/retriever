@@ -67,3 +67,27 @@ def test_list_of_empty_directory(server_port):
 
     assert status == 0
     assert names == set()
+
+
+def test_failed_put_does_not_delete_existing_file(server_port, tmp_path):
+    """A PUT that dies mid-transfer must not touch a pre-existing server file.
+
+    Regression test: the v1 error handler removed `filename` on any
+    exception, even when the failed upload never created that file.
+    """
+    original = b"\x89PNG\r\n\x1a\n" + b"original contents"
+    existing = tmp_path / "photo.png"
+    existing.write_bytes(original)
+
+    with socket.create_connection(("127.0.0.1", server_port), timeout=5) as sock:
+        name = b"photo.png"
+        H.send_u8(sock, 2)              # PUT
+        H.send_u16(sock, len(name))
+        sock.sendall(name)
+        H.send_u64(sock, 1000)          # promise a 1000-byte body...
+    # ...and hang up without sending any of it
+
+    time.sleep(0.3)  # let the server finish its error handling
+
+    assert existing.exists(), "failed PUT deleted a file it never created"
+    assert existing.read_bytes() == original
