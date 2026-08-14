@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+from retriever import client
 from retriever import protocol as H
 from retriever.server import start_server
 
@@ -91,3 +92,39 @@ def test_failed_put_does_not_delete_existing_file(server_port, tmp_path):
 
     assert existing.exists(), "failed PUT deleted a file it never created"
     assert existing.read_bytes() == original
+
+
+def test_get_leaves_no_partial_file_when_connection_dies(tmp_path, monkeypatch):
+    """A GET that dies mid-download must not leave a partial file behind.
+
+    Regression test: v1 wrote straight to the destination name, so a dead
+    connection left a truncated file that looked like a real download.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    def evil_server():
+        conn, _ = listener.accept()
+        H.recv_u8(conn)                    # GET command
+        name_len = H.recv_u16(conn)
+        H.read_exact_bytes(conn, name_len) # filename
+        H.send_u8(conn, 0)                 # status OK
+        H.send_u64(conn, 1000)             # promise 1000 bytes...
+        conn.sendall(b"x" * 100)           # ...deliver only 100
+        conn.close()                       # and hang up
+
+    t = threading.Thread(target=evil_server, daemon=True)
+    t.start()
+
+    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    client.do_get(sock, "victim.bin")      # prints the failure, must not raise
+    sock.close()
+    t.join(timeout=5)
+    listener.close()
+
+    leftovers = [p.name for p in tmp_path.iterdir()]
+    assert leftovers == [], f"dead GET left files behind: {leftovers}"

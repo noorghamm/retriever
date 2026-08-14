@@ -60,25 +60,28 @@ def do_get(sock,filename):
 
         
 
+    #download into a temp name and rename only when complete, so a dead
+    #connection never leaves a partial file that looks like a real download
+    tmp = dest + ".part"
     try:
-        #create a local file with same name 
-        with open(dest, "wb") as f:
-            remaining = size 
+        with open(tmp, "wb") as f:
+            remaining = size
             while remaining > 0:
                 chunk = sock.recv(min(65536,remaining))
                 if not chunk:
                     raise ConnectionError("Connection lost during GET.")
                 f.write(chunk)
                 remaining -= len(chunk)
+        os.replace(tmp, dest)
 
         print("Downloaded '{}' successfully ({} bytes).".format(dest,size))
         print(f"{peer[0]}:{peer[1]} | GET | {filename} | status=ok")
         print(f"Saved as '{dest}' in current folder.")
 
     except Exception as e:
+        if os.path.exists(tmp):
+            os.remove(tmp)
         print("GET failed: {}".format(e))
-        peer= sock.getpeername()
-        print("{}:{} | GET | {} | status=fail".format(peer[0],peer[1],filename))
         print(f"{peer[0]}:{peer[1]} | GET | {filename} | status=fail")
 
 
