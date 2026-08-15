@@ -126,9 +126,15 @@ and closes:
 
 Version 2 replaces v1's bare command bytes with framed, versioned
 messages and structured errors. All integers remain unsigned,
-big-endian. One command per connection (sessions arrive in a later
-version). v1 is no longer accepted: its first byte fails the magic
+big-endian. v1 is no longer accepted: its first byte fails the magic
 check and the server answers with an UNSUPPORTED_VERSION error frame.
+
+Amended 2026-08-15, before any deployment existed: connections are
+sessions. After HELLO, a client may send any number of commands and
+ends the conversation with QUIT (or by closing the connection). The
+original v2 text specified one command per connection; the amendment
+replaces it rather than bumping the version, because version numbers
+exist to protect deployed peers and v2 had none.
 
 ### Layering notes
 
@@ -162,6 +168,7 @@ longer than the cap for its frame type is MALFORMED.
 | type | direction        | meaning | payload cap |
 |------|------------------|---------|-------------|
 | 0x10 | client to server | HELLO   | 0           |
+| 0x11 | client to server | QUIT    | 0           |
 | 0x00 | client to server | LIST    | 0           |
 | 0x01 | client to server | GET     | 64 KiB      |
 | 0x02 | client to server | PUT     | 64 KiB      |
@@ -197,10 +204,33 @@ Reason codes:
       | <------------------- OK --- |      (or ERROR + close)
       | -- LIST / GET / PUT -------> |
       |        ... command exchange ...
-      |         (connection closes)
+      | -- LIST / GET / PUT -------> |      (any number of commands)
+      |        ... command exchange ...
+      | -- QUIT -------------------> |
+      | <------------------- OK --- |      (server closes)
 
 HELLO carries no payload; the header's version byte is the handshake.
-Any command frame sent before HELLO is MALFORMED.
+Any command frame sent before HELLO is MALFORMED. A connection closed
+without QUIT is not an error, just less polite. A protocol violation
+(FrameError) still ends the session: after sending the ERROR frame the
+server closes, because framing errors leave the byte stream in an
+unknowable state.
+
+### Concurrency semantics
+
+The server handles many sessions at once. The filesystem is the shared
+state, and the rules are:
+
+- Two simultaneous PUTs of the same name: exactly one wins the atomic
+  create (open "xb"); the other receives ALREADY_EXISTS. Which one wins
+  is a race and deliberately unspecified.
+- A GET of a file mid-upload cannot happen for uploads, since a PUT in
+  progress owns the name it created; a GET for that name during upload
+  sees the partial file. Callers who need atomic publication should
+  upload to a temp name and rename (this becomes server-side behavior
+  in a later version).
+- LIST reflects the directory at the moment of the call; it may show
+  files whose upload is still in progress.
 
 ### LIST
 
@@ -280,5 +310,7 @@ close-without-drain on PUT rejection (structurally impossible with the
 two-step flow), stray bytes treated as commands, undetectable version
 mismatch.
 
-Still open, by design: one command per connection (sessions), no
-integrity checking (both deferred to later versions).
+Resolved by the session amendment: one command per connection.
+
+Still open, by design: no end-to-end integrity checking (deferred to a
+later version).
