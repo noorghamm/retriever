@@ -204,19 +204,20 @@ def test_get_leaves_no_partial_file_when_connection_dies(tmp_path, monkeypatch):
 
     def evil_server():
         conn, _ = listener.accept()
-        H.recv_u8(conn)                    # GET command (v1 client for now)
-        name_len = H.recv_u16(conn)
-        H.read_exact_bytes(conn, name_len) # filename
-        H.send_u8(conn, 0)                 # status OK
-        H.send_u64(conn, 1000)             # promise 1000 bytes...
-        conn.sendall(b"x" * 100)           # ...deliver only 100
-        conn.close()                       # and hang up
+        H.read_frame(conn)                       # HELLO
+        H.write_frame(conn, H.T_OK)
+        H.read_frame(conn)                       # GET request
+        H.write_frame_header(conn, H.T_OK, 1000) # promise 1000 bytes...
+        conn.sendall(b"x" * 100)                 # ...deliver only 100
+        conn.close()                             # and hang up
 
     t = threading.Thread(target=evil_server, daemon=True)
     t.start()
 
-    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
-    client.do_get(sock, "victim.bin")      # prints the failure, must not raise
+    sock = client.connect("127.0.0.1", port)
+    with pytest.raises(SystemExit) as exc:
+        client.do_get(sock, "victim.bin")
+    assert exc.value.code == client.EXIT_CONN
     sock.close()
     t.join(timeout=5)
     listener.close()
