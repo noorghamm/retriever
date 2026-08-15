@@ -1,230 +1,184 @@
 import sys
 import os
 import socket
+import logging
 
-#binary I/O helper functions (used in LIST/GET/PUT)
 from retriever import protocol as H
 
-#function that creates a tcp socket and binds it to an ip port
+log = logging.getLogger("retriever.server")
+
+
 def create_server_socket(port):
-     #creates a server socket (AF_INET) indicates that its in IPV4, SOCK_STREAM shows that its a TCP socket (SOCK_DGRAM) for UDP
-    srv_sock= socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    """Create a TCP socket bound to every interface on the given port."""
+    srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        # binds the socket to specific IP and port
-        #"0.0.0.0" is the deafult to bind to ANY IP address
-
-         #This prevents the "Address already in use" error when restarting the server.
+        #prevents "Address already in use" when restarting the server
         srv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv_sock.bind(("0.0.0.0",port))  
-
-        #listen for incoming connections, with a size of queue that is set to 5
+        srv_sock.bind(("0.0.0.0", port))
         srv_sock.listen(5)
-        print("Server is ready on 0.0.0.0, running on port {}".format(port))
+        log.info("listening on 0.0.0.0:%d", port)
     except OSError as e:
-        print("ERROR binding Socket on port {}:{}".format(port, e))
-
-        #exit with 1 indicating an error
+        log.error("cannot bind port %d: %s", port, e)
         sys.exit(1)
     return srv_sock
 
-def handle_client(cli_sock,cli_addr):
-    """
-    Binary protocol:
-      Client -> Server:
-        LIST: [u8:0]
-        GET : [u8:1][u16:filename_length][fname_bytes]
-        PUT : [u8:2][u16:filename_length][fname_bytes][u64:file_size][file_bytes]
-    """
+
+def send_error(sock, reason, message):
+    H.write_frame(sock, H.T_ERROR, H.pack_error(reason, message))
+
+
+def handle_client(cli_sock, cli_addr):
+    """One v2 conversation: HELLO, one command, reply, close."""
+    peer = "{}:{}".format(*cli_addr)
     try:
-        #read the first unsigned integer code, 0=LIST, 1=GET, 2=PUT
-        code = H.recv_u8(cli_sock)
+        frame_type, _ = H.read_frame(cli_sock)
+        if frame_type != H.T_HELLO:
+            raise H.FrameError(H.E_MALFORMED, "expected HELLO before any command")
+        H.write_frame(cli_sock, H.T_OK)
 
-        if code == 0:  #LIST
-            handle_list(cli_sock, cli_addr)
-            return
-        
-        elif code == 1: #GET
-            #client sends a 2 byte number(length of file name) to the server 
-            file_name_len = H.recv_u16(cli_sock)
-            #calls helper function to read until it has file_name_len bytes. 
-            file_name = H.read_exact_bytes(cli_sock,file_name_len).decode("utf-8") #filename bytes are converted to a python string
-            handle_get(cli_sock,cli_addr,file_name)
-            return
-        elif code == 2: #PUT
-            file_name_len = H.recv_u16(cli_sock)
-            file_name = H.read_exact_bytes(cli_sock,file_name_len).decode("utf-8")
-            file_size = H.recv_u64(cli_sock)
-            handle_put(cli_sock,cli_addr,file_name,file_size)
-            return
+        frame_type, payload = H.read_frame(cli_sock)
+        if frame_type == H.T_LIST:
+            handle_list(cli_sock, peer)
+        elif frame_type == H.T_GET:
+            handle_get(cli_sock, peer, payload)
+        elif frame_type == H.T_PUT:
+            handle_put(cli_sock, peer, payload)
         else:
-            H.send_u8(cli_sock,1)
-            H.send_u64(cli_sock,0)
-            print(" {}:{} | UNKNOWN({}) | bad code".format(cli_addr[0],cli_addr[1],code))
+            raise H.FrameError(H.E_MALFORMED, "expected a command frame")
 
-    except socket.timeout:
-        print(f"{cli_addr[0]}:{cli_addr[1]} | TIMEOUT | no data for {H.SOCKET_TIMEOUT}s")
-    except (ConnectionError, ConnectionResetError) as e:
-        print(f"{cli_addr[0]}:{cli_addr[1]} | CLIENT_DISCONNECT | {e}")
-    except Exception as e:
+    except H.FrameError as e:
+        log.warning("%s protocol violation: %s", peer, e)
         try:
-            H.send_u8(cli_sock,2)
-            H.send_u64(cli_sock,0)
-        except Exception as e:
+            send_error(cli_sock, e.reason, str(e))
+        except OSError:
             pass
-        print("{}:{} |INTERNAL | {}".format(cli_addr[0],cli_addr[1],e))
+    except socket.timeout:
+        log.warning("%s timed out: no data for %ss", peer, H.SOCKET_TIMEOUT)
+    except (ConnectionError, ConnectionResetError) as e:
+        log.info("%s disconnected: %s", peer, e)
+    except Exception:
+        log.exception("%s internal error", peer)
+        try:
+            send_error(cli_sock, H.E_INTERNAL, "internal server error")
+        except OSError:
+            pass
     finally:
         cli_sock.close()
-        print(f"{cli_addr[0]}:{cli_addr[1]} | DISCONNECTED")
+        log.debug("%s connection closed", peer)
 
-def handle_list(cli_sock,cli_addr):
+
+def parse_name(payload):
+    """Split a payload starting with u16 name_len + name bytes.
+    Returns (name, remaining bytes)."""
+    if len(payload) < 2:
+        raise H.FrameError(H.E_MALFORMED, "payload too short for a name length")
+    name_len = int.from_bytes(payload[:2], "big")
+    if len(payload) < 2 + name_len:
+        raise H.FrameError(H.E_MALFORMED, "payload shorter than its name_len claims")
+    name = payload[2:2 + name_len].decode("utf-8", errors="replace")
+    return name, payload[2 + name_len:]
+
+
+def handle_list(cli_sock, peer):
+    names = os.listdir(".")
+    body = b"\0".join(n.encode("utf-8") for n in names)
+    H.write_frame(cli_sock, H.T_OK, body)
+    log.info("%s LIST ok (%d entries)", peer, len(names))
+
+
+def handle_get(cli_sock, peer, payload):
+    name, rest = parse_name(payload)
+    if rest:
+        raise H.FrameError(H.E_MALFORMED, "trailing bytes after GET name")
+    if not H.check_filename(name):
+        send_error(cli_sock, H.E_BAD_NAME, "invalid filename")
+        log.info("%s GET %r rejected: bad name", peer, name)
+        return
+    if not os.path.isfile(name):
+        send_error(cli_sock, H.E_NOT_FOUND, "not found on server")
+        log.info("%s GET %s rejected: not found", peer, name)
+        return
+
+    size = os.path.getsize(name)
+    #header first, then the body streams disk-to-socket, never through RAM
+    H.write_frame_header(cli_sock, H.T_OK, size)
+    with open(name, "rb") as f:
+        while True:
+            chunk = f.read(65536)
+            if not chunk:
+                break
+            cli_sock.sendall(chunk)
+    log.info("%s GET %s ok (%d bytes)", peer, name, size)
+
+
+def handle_put(cli_sock, peer, payload):
+    #step 1: name + size arrive framed; the server approves or rejects
+    #before any body bytes travel
+    name, rest = parse_name(payload)
+    if len(rest) != 8:
+        raise H.FrameError(H.E_MALFORMED, "PUT payload must end with a u64 file size")
+    file_size = int.from_bytes(rest, "big")
+
+    if not H.check_filename(name):
+        send_error(cli_sock, H.E_BAD_NAME, "invalid filename")
+        log.info("%s PUT %r rejected: bad name", peer, name)
+        return
     try:
-        #list all files and folders in directory
-        names = os.listdir(".")
-        #encode converts each filename (string) into bytes, join null byte is used to seperate them
-        payload = b"\0".join(n.encode("utf-8") for n in names)
-        H.send_u8(cli_sock,0)
-        H.send_u64(cli_sock,len(payload))
-        if payload:
-            cli_sock.sendall(payload)
-        print("{}:{} | LIST | status=ok".format(cli_addr[0],cli_addr[1]))
-    except Exception as e:
-        try:
-            H.send_u8(cli_sock,2)
-            H.send_u64(cli_sock,0)
-        except Exception:
-            pass
-        print("{}:{} | LIST | status=fail {}".format(cli_addr[0],cli_addr[1],e))
+        out = open(name, "xb")   #atomic claim; also our license to delete on failure
+    except FileExistsError:
+        send_error(cli_sock, H.E_ALREADY_EXISTS, "file already exists on server")
+        log.info("%s PUT %s rejected: already exists", peer, name)
+        return
 
+    H.write_frame(cli_sock, H.T_OK)   #permission to send
 
-def handle_get(cli_sock,cli_addr,filename):
+    #step 2: exactly file_size raw bytes (no frame: TCP is already a
+    #byte stream and the size was stated in step 1)
+    written = 0
+    head = b""
     try:
-        if not H.check_filename(filename):
-            H.send_u8(cli_sock,1)
-            H.send_u64(cli_sock,0)
-            print("{}:{} | GET {} | status=fail:bad_name".format(cli_addr[0],cli_addr[1],filename))
-            return
-        
-        if not os.path.exists(filename) or not os.path.isfile(filename):
-            H.send_u8(cli_sock,1)
-            H.send_u64(cli_sock,0)
-            print("{}:{} | GET |{}| status=fail:not_found".format(cli_addr[0],cli_addr[1],filename))
-            return
-        
-        size = os.path.getsize(filename)
-        H.send_u8(cli_sock,0)
-        H.send_u64(cli_sock,size)
-
-        with open(filename, "rb") as f:
-            while True:
-                chunk = f.read(65536)
-                if not chunk:
-                    break
-                cli_sock.sendall(chunk)
-        print("{}:{}|GET|{}| status=ok".format(cli_addr[0],cli_addr[1],filename))
-    except Exception as e:
-        try:
-            H.send_u8(cli_sock,2)
-            H.send_u64(cli_sock,0)
-        except Exception:
-            pass
-        print("{}:{}|GET | {} | status = fail: {}".format(cli_addr[0], cli_addr[1],filename,e))
-
-def handle_put(cli_sock, cli_addr, filename, file_size):
-    out = None
-    created = False   #only True once WE created the file, so cleanup never deletes a pre-existing one
-    try:
-        #validate file name
-        if not H.check_filename(filename):
-            H.send_u8(cli_sock,1)
-            print("{}:{}| PUT | {} satus=fail:bad_name".format(cli_addr[0], cli_addr[1], filename))
-            return
-            
-        #checks if it is an image
-        
-        if not H.is_image(filename):
-            H.send_u8(cli_sock,1)
-            print("{}:{}| PUT | {} | status=fail:not_image".format(cli_addr[0],cli_addr[1],filename))
-            return
-        need = min(8,file_size)
-        head = H.read_exact_bytes(cli_sock,need)
-        
-        if not (H.is_jpeg_header(head) or H.is_png_header(head)):
-            H.send_u8(cli_sock,1)
-            print("{}:{} | PUT |{}| status=fail:not_image".format(cli_addr[0],cli_addr[1],filename))
-            return
-
-
-        try:
-            out = open(filename,"xb")
-        except FileExistsError:
-            H.send_u8(cli_sock,1)
-            print("{}:{} | PUT| {} | status=fail:file exist".format(cli_addr[0],cli_addr[1],filename))
-            return
-        created = True
-        written =0
         with out:
-            out.write(head)
-            written += len(head)
-            while written < file_size :
-                need = min(65536, file_size - written)
-                chunk = H.read_exact_bytes(cli_sock, need)
+            while written < file_size:
+                chunk = H.read_exact_bytes(cli_sock, min(65536, file_size - written))
+                if written == 0:
+                    head = chunk[:8]
                 out.write(chunk)
-                written +=len(chunk)
+                written += len(chunk)
+    except Exception:
+        #we created this file (open "xb" succeeded), so removing it is safe
+        os.remove(name)
+        raise
 
-        H.send_u8(cli_sock,0)
-        print("{}:{} | PUT |{} | OK: {}B".format(cli_addr[0],cli_addr[1],filename,written))
+    if H.is_image(name) and not (H.is_jpeg_header(head) or H.is_png_header(head)):
+        log.warning("%s PUT %s: image extension but content is not JPEG/PNG", peer, name)
 
-    except Exception as e:
-        try:
-            if out is not None and not out.closed:
-                out.close()
-            if created and os.path.exists(filename):
-                os.remove(filename)
-        except Exception as cleanup_err:
-            print(f"Cleanup failed: {cleanup_err}")
-
-        try:
-            H.send_u8(cli_sock,2)
-        except Exception:
-            pass
-        print("{}:{}| PUT | {} | status=fail: {}".format(cli_addr[0],cli_addr[1],filename,e))
+    H.write_frame(cli_sock, H.T_OK)
+    log.info("%s PUT %s ok (%d bytes)", peer, name, written)
 
 
-
-      
 def start_server(port):
-    """The main server function: accept and process client connections."""
+    """The main server loop: accept and process one client at a time."""
     srv_sock = create_server_socket(port)
     try:
         while True:
             try:
-                # accept() takes the first request from the queue and processes it.
-                # If there is no request, wait until a new client connects.
                 cli_sock, cli_addr = srv_sock.accept()
 
                 #a silent peer must not hang the sequential server
                 cli_sock.settimeout(H.SOCKET_TIMEOUT)
-
-                # cli_addr is a tuple (IP, port)
-                print("{}:{} | CONNECTED".format(cli_addr[0], cli_addr[1]))
-
-                # Handle the client (this function will be implemented later)
+                log.debug("%s:%s connected", *cli_addr)
                 handle_client(cli_sock, cli_addr)
-
             except Exception as e:
-                # Catch any errors with one simple message
-                print("Server error:", e)
-
+                log.error("server error: %s", e)
     except KeyboardInterrupt:
-        print("Server down: Keyboard Interruption")
-
+        log.info("server stopped by keyboard interrupt")
     finally:
         srv_sock.close()
-        print("Server socket closed")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) !=2:
-        print("Usage: python3 server.py <port>")
-        #exit program with error code
+    if len(sys.argv) != 2:
+        print("Usage: python3 -m retriever.server <port>")
         sys.exit(1)
     try:
         port = int(sys.argv[1])
@@ -232,10 +186,11 @@ if __name__ == "__main__":
             print("port must be between 1024 and 65535")
             sys.exit(1)
     except ValueError:
-        print("Invalid port number. Please print a valid integer for the port")
+        print("Invalid port number. Please enter a valid integer for the port")
         sys.exit(1)
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     start_server(port)
-
-
-

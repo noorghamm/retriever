@@ -49,6 +49,12 @@ class FrameError(Exception):
         self.reason = reason
 
 
+def write_frame_header(sock, frame_type, payload_len):
+    """Send just a v2 header; the caller streams payload_len bytes itself.
+    Used for GET reply bodies, which go disk-to-socket without buffering."""
+    sock.sendall(MAGIC + bytes([VERSION, frame_type]) + payload_len.to_bytes(8, "big"))
+
+
 def write_frame(sock, frame_type, payload=b""):
     """Send one v2 frame: 14-byte header followed by the payload."""
     header = MAGIC + bytes([VERSION, frame_type]) + len(payload).to_bytes(8, "big")
