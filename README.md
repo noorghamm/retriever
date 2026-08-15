@@ -13,7 +13,7 @@ Everything after it is the rebuild. The wire format is documented in
 ## Status
 
 - [x] Phase 0: own repo, protocol documented, test harness, baseline bugs fixed
-- [ ] Phase 1: framed protocol v2 with versioning and real error codes
+- [x] Phase 1: framed protocol v2 with versioning and real error codes
 - [ ] Phase 2: concurrent server, multi-command sessions
 - [ ] Phase 3: resumable transfers, SHA-256 integrity
 - [ ] Phase 4: C client speaking the same protocol
