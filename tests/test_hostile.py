@@ -115,6 +115,27 @@ def test_put_empty_file(server_port, tmp_path):
     assert (tmp_path / "empty.bin").read_bytes() == b""
 
 
+def test_put_over_size_limit_rejected_at_step_one(server_port, monkeypatch):
+    """A huge file_size claim is refused before any body bytes travel."""
+    monkeypatch.setattr(H, "MAX_FILE_SIZE", 1000)
+    with connect_v2(server_port) as sock:
+        H.write_frame(sock, H.T_PUT, name_payload(b"big.bin", 1001))
+        message = _expect_error(sock, H.E_TOO_LARGE)
+    assert "1000" in message   # the limit is stated to the client
+
+
+def test_put_exactly_at_size_limit_accepted(server_port, tmp_path, monkeypatch):
+    monkeypatch.setattr(H, "MAX_FILE_SIZE", 1000)
+    with connect_v2(server_port) as sock:
+        H.write_frame(sock, H.T_PUT, name_payload(b"max.bin", 1000))
+        frame_type, _ = H.read_frame(sock)
+        assert frame_type == H.T_OK
+        sock.sendall(b"x" * 1000)
+        frame_type, _ = H.read_frame(sock)
+        assert frame_type == H.T_OK
+    assert (tmp_path / "max.bin").read_bytes() == b"x" * 1000
+
+
 def test_get_empty_file(server_port, tmp_path):
     (tmp_path / "empty.bin").write_bytes(b"")
     with connect_v2(server_port) as sock:

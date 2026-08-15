@@ -27,6 +27,10 @@ E_ALREADY_EXISTS = 3
 E_MALFORMED = 4
 E_UNSUPPORTED_VERSION = 5
 E_INTERNAL = 6
+E_TOO_LARGE = 7
+
+#largest file_size a PUT may claim; guards the server's disk
+MAX_FILE_SIZE = 1024 ** 3   #1 GiB
 
 #max payload per frame type; None means the caller streams the payload
 #itself (GET reply bodies) and must not read it through read_frame

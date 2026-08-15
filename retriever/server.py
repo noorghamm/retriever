@@ -123,6 +123,11 @@ def handle_put(cli_sock, peer, payload):
         send_error(cli_sock, H.E_BAD_NAME, "invalid filename")
         log.info("%s PUT %r rejected: bad name", peer, name)
         return
+    if file_size > H.MAX_FILE_SIZE:
+        send_error(cli_sock, H.E_TOO_LARGE,
+                   f"file exceeds the {H.MAX_FILE_SIZE} byte limit")
+        log.info("%s PUT %s rejected: %d bytes too large", peer, name, file_size)
+        return
     try:
         out = open(name, "xb")   #atomic claim; also our license to delete on failure
     except FileExistsError:

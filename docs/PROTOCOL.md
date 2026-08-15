@@ -152,7 +152,9 @@ Every message in both directions begins with a fixed 14-byte header:
 | 6      | 8    | u64  | payload_len | bytes following the header   |
 
 A receiver that sees wrong magic or an unsupported version must send
-an ERROR frame (BAD_MAGIC / UNSUPPORTED_VERSION) and close. A payload
+an UNSUPPORTED_VERSION error frame and close (wrong magic means the
+peer is not speaking retriever at all, which is the same category of
+incompatibility). A payload
 longer than the cap for its frame type is MALFORMED.
 
 ### Frame types
@@ -186,6 +188,7 @@ Reason codes:
 | 4    | MALFORMED           | frame violates this spec                 |
 | 5    | UNSUPPORTED_VERSION | bad magic or version, incl. v1 peers     |
 | 6    | INTERNAL            | server-side failure                      |
+| 7    | TOO_LARGE           | PUT file_size exceeds the server's limit |
 
 ### Connection lifecycle
 
@@ -216,9 +219,11 @@ memory.
 ### PUT (two-step)
 
 Step 1. Request: PUT frame; payload is u16 name_len + name bytes +
-u64 file_size. The server validates the name and target and replies
-with an empty OK frame (permission to send) or an ERROR frame. Nothing
-is written to disk yet, so a rejected PUT costs bytes, not bandwidth.
+u64 file_size. The server validates the name, the target, and the
+size (a file_size above the server's limit, 1 GiB by default, is
+rejected TOO_LARGE) and replies with an empty OK frame (permission to
+send) or an ERROR frame. Nothing is written to disk yet, so a rejected
+PUT costs bytes, not bandwidth.
 
 Step 2. On OK, the client sends exactly file_size raw bytes: no frame
 around the body, because TCP already carries a length-known byte
