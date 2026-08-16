@@ -25,25 +25,38 @@
  * and to return pointers to static storage, which makes them awkward and
  * surprising. Doing it by hand is clearer and safer here.
  */
-void rtrv_split_path(const char *path, char *dir, size_t dir_size,
-                     char *base, size_t base_size)
+int rtrv_split_path(const char *path, char *dir, size_t dir_size,
+                    char *base, size_t base_size)
 {
     const char *slash = strrchr(path, '/');
-    if (slash == NULL) {
-        snprintf(dir, dir_size, ".");
-        snprintf(base, base_size, "%s", path);
-    } else {
-        size_t dir_len = (size_t)(slash - path);
-        if (dir_len == 0) {
-            dir_len = 1;   /* the path "/file" lives in "/" */
-        }
-        if (dir_len >= dir_size) {
-            dir_len = dir_size - 1;
-        }
-        memcpy(dir, path, dir_len);
-        dir[dir_len] = '\0';
-        snprintf(base, base_size, "%s", slash + 1);
+    const char *name = slash ? slash + 1 : path;
+
+    /* Truncating a path silently would produce a wrong partial file
+     * name, so refuse rather than guess. */
+    if (strlen(name) >= base_size) {
+        return -1;
     }
+    memcpy(base, name, strlen(name) + 1);
+
+    if (slash == NULL) {
+        if (dir_size < 2) {
+            return -1;
+        }
+        dir[0] = '.';
+        dir[1] = '\0';
+        return 0;
+    }
+
+    size_t dir_len = (size_t)(slash - path);
+    if (dir_len == 0) {
+        dir_len = 1;   /* the path "/file" lives in "/" */
+    }
+    if (dir_len >= dir_size) {
+        return -1;
+    }
+    memcpy(dir, path, dir_len);
+    dir[dir_len] = '\0';
+    return 0;
 }
 
 /*
@@ -51,21 +64,30 @@ void rtrv_split_path(const char *path, char *dir, size_t dir_size,
  * The resume token in the name is what stops a resume from splicing one
  * file's bytes onto another's.
  */
-void rtrv_partial_name(const char *dest, const unsigned char *digest,
-                       char *out, size_t out_size)
+int rtrv_partial_name(const char *dest, const unsigned char *digest,
+                      char *out, size_t out_size)
 {
-    char dir[RTRV_PATH_MAX];
-    char base[RTRV_PATH_MAX];
+    char dir[RTRV_DIR_MAX];
+    char base[RTRV_MAX_NAME + 1];   /* a filename is 255 bytes at most */
     char token[RTRV_TOKEN_SIZE * 2 + 1];
 
-    rtrv_split_path(dest, dir, sizeof(dir), base, sizeof(base));
+    if (rtrv_split_path(dest, dir, sizeof(dir), base, sizeof(base)) < 0) {
+        fprintf(stderr, "error: path '%s' is too long\n", dest);
+        return -1;
+    }
     sha256_hex(digest, RTRV_TOKEN_SIZE, token);
 
-    if (strcmp(dir, ".") == 0 && strchr(dest, '/') == NULL) {
-        snprintf(out, out_size, ".%s.%s.part", base, token);
+    int written;
+    if (strchr(dest, '/') == NULL) {
+        written = snprintf(out, out_size, ".%s.%s.part", base, token);
     } else {
-        snprintf(out, out_size, "%s/.%s.%s.part", dir, base, token);
+        written = snprintf(out, out_size, "%s/.%s.%s.part", dir, base, token);
     }
+    if (written < 0 || (size_t)written >= out_size) {
+        fprintf(stderr, "error: path '%s' is too long\n", dest);
+        return -1;
+    }
+    return 0;
 }
 
 /*
@@ -77,16 +99,20 @@ void rtrv_partial_name(const char *dest, const unsigned char *digest,
 int rtrv_find_partial(const char *dest, char *path_out, size_t path_size,
                       uint64_t *size_out, unsigned char *token_out)
 {
-    char dir[RTRV_PATH_MAX];
-    char base[RTRV_PATH_MAX];
-    rtrv_split_path(dest, dir, sizeof(dir), base, sizeof(base));
+    char dir[RTRV_DIR_MAX];
+    char base[RTRV_MAX_NAME + 1];   /* bounded by the protocol's name limit */
+    if (rtrv_split_path(dest, dir, sizeof(dir), base, sizeof(base)) < 0) {
+        return -1;
+    }
 
     DIR *d = opendir(dir);
     if (d == NULL) {
         return -1;
     }
 
-    char prefix[RTRV_PATH_MAX];
+    /* sized from base (a dot either side plus the terminator), so the
+     * compiler can see this can never truncate */
+    char prefix[RTRV_MAX_NAME + 8];
     snprintf(prefix, sizeof(prefix), ".%s.", base);
     size_t prefix_len = strlen(prefix);
 
@@ -158,6 +184,7 @@ int rtrv_do_get(int fd, const char *remote_name, const char *dest)
     /* offer whatever partial we already hold, so the server can send
      * only the bytes we are missing */
     char existing[RTRV_PATH_MAX];
+    existing[0] = '\0';   /* so it is never read uninitialised */
     uint64_t offset = 0;
     unsigned char token[RTRV_TOKEN_SIZE];
     memset(token, 0, sizeof(token));
@@ -222,7 +249,9 @@ int rtrv_do_get(int fd, const char *remote_name, const char *dest)
     const unsigned char *digest = meta + 16;
 
     char partial[RTRV_PATH_MAX];
-    rtrv_partial_name(dest, digest, partial, sizeof(partial));
+    if (rtrv_partial_name(dest, digest, partial, sizeof(partial)) < 0) {
+        return -1;
+    }
 
     if (start > 0) {
         printf("resuming '%s' from byte %llu\n",

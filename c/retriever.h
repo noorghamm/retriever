@@ -59,7 +59,8 @@
 #define RTRV_TOKEN_SIZE  8    /* resume token: first 8 bytes of the hash */
 #define RTRV_GET_META    48   /* u64 total_size, u64 start_offset, 32-byte hash */
 #define RTRV_MAX_NAME    255  /* protocol limit on a filename */
-#define RTRV_PATH_MAX    1024 /* our own limit on a local path */
+#define RTRV_DIR_MAX     512  /* our own limit on a directory part */
+#define RTRV_PATH_MAX    1024 /* our own limit on a whole local path */
 
 /* --- byte packing ------------------------------------------------------ */
 
@@ -127,13 +128,17 @@ void rtrv_report_error(const unsigned char *payload, uint64_t payload_len);
 
 /* --- transfers ---------------------------------------------------------- */
 
-/* Split a path into directory and last component. */
-void rtrv_split_path(const char *path, char *dir, size_t dir_size,
-                     char *base, size_t base_size);
+/*
+ * Split a path into directory and last component. Returns 0, or -1 if
+ * either part would not fit: truncating a path silently would build the
+ * wrong partial file name, so it is refused instead.
+ */
+int rtrv_split_path(const char *path, char *dir, size_t dir_size,
+                    char *base, size_t base_size);
 
-/* Build the partial file name for a transfer: .<name>.<token hex>.part */
-void rtrv_partial_name(const char *dest, const unsigned char *digest,
-                       char *out, size_t out_size);
+/* Build the partial file name: .<name>.<token hex>.part. Returns 0 or -1. */
+int rtrv_partial_name(const char *dest, const unsigned char *digest,
+                      char *out, size_t out_size);
 
 /*
  * Find an existing partial for dest. Returns 1 if exactly one was found
