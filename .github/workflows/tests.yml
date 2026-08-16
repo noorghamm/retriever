@@ -50,5 +50,11 @@ jobs:
           # default leak kinds only: glibc's getaddrinfo leaves "still
           # reachable" allocations from loading NSS modules, which are
           # not ours and not leaks in any useful sense
-          valgrind --error-exitcode=1 --leak-check=full \
-                   ./c/retriever 127.0.0.1 5050 list
+          VG="valgrind --error-exitcode=1 --leak-check=full"
+          head -c 100000 /dev/urandom > /tmp/vg-payload.bin
+          $VG ./c/retriever 127.0.0.1 5050 list
+          $VG ./c/retriever 127.0.0.1 5050 put /tmp/vg-payload.bin vg-uploaded.bin
+          $VG ./c/retriever 127.0.0.1 5050 get vg-uploaded.bin -o /tmp/vg-back.bin
+          cmp /tmp/vg-payload.bin /tmp/vg-back.bin
+          # and the error path, which is where leaks usually hide
+          $VG ./c/retriever 127.0.0.1 5050 get definitely-missing.bin -o /tmp/no.bin || true

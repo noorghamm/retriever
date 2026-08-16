@@ -16,7 +16,7 @@ Everything after it is the rebuild. The wire format is documented in
 - [x] Phase 1: framed protocol v2 with versioning and real error codes
 - [x] Phase 2: concurrent server, multi-command sessions
 - [x] Phase 3: resumable transfers, SHA-256 integrity
-- [ ] Phase 4: C client speaking the same protocol (LIST works; GET and PUT next)
+- [x] Phase 4: C client speaking the same protocol
 
 ## Usage
 
@@ -53,13 +53,21 @@ capture of a real exchange, read byte by byte against the spec.
 ## The C client
 
 A second implementation of the same protocol lives in [c/](c/), written
-against the spec rather than against the Python source. It currently
-speaks HELLO, LIST and QUIT.
+against the spec rather than against the Python source. It speaks the
+full v3 protocol: LIST, GET and PUT, with resume and hash verification.
 
     make -C c          # build
     make -C c debug    # rebuild with address/UB sanitizers
     ./c/retriever 127.0.0.1 5050 list
+    ./c/retriever 127.0.0.1 5050 get report.pdf -o local.pdf
+    ./c/retriever 127.0.0.1 5050 put photo.png
+
+It has no dependencies beyond libc, which meant writing SHA-256 by hand
+from FIPS 180-4 ([c/sha256.c](c/sha256.c)); the test suite checks it
+against Python's hashlib at every message-padding boundary.
 
 Interop tests build it and run it against the real Python server, so the
-two implementations are held to the same wire format. CI additionally
-runs it under valgrind.
+two implementations are held to the same wire format: a file uploaded by
+the C client and downloaded by the Python one has to come back
+byte-identical. CI additionally runs the C client under valgrind, on the
+success and failure paths.
