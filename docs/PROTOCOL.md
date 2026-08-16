@@ -312,5 +312,160 @@ mismatch.
 
 Resolved by the session amendment: one command per connection.
 
-Still open, by design: no end-to-end integrity checking (deferred to a
-later version).
+Resolved by v3: no end-to-end integrity checking, no resumable
+transfers.
+
+## Version 3
+
+Version 3 adds resumable transfers and end-to-end integrity checking.
+The frame header, frame types, session lifecycle, filename rules, and
+error frame format are unchanged from v2; only the GET and PUT payload
+layouts change, and they change incompatibly, which is why the version
+byte moves to 0x03. A v2 peer is rejected with UNSUPPORTED_VERSION
+exactly as a v1 peer is.
+
+Fixed-size fields now come first in every payload, with the variable
+length name last. This is deliberate: a receiver can parse the whole
+fixed part in one read, which matters most for the C implementation.
+
+### What integrity means here
+
+Every transfer states the SHA-256 of the complete file before any body
+byte travels, and the receiver verifies the finished file against it.
+The hash covers the whole file, not the transferred range, so a
+resumed transfer verifies the join as well as the new bytes.
+
+The first 8 bytes of that hash double as a **resume token**: a cheap
+identity check answering "is this the same file I was transferring
+before?" It is not an integrity check, and the spec never treats it as
+one; the full 32-byte hash is always what decides whether a transfer
+succeeded.
+
+### New reason code
+
+| code | name    | meaning                                          |
+|------|---------|--------------------------------------------------|
+| 8    | CORRUPT | completed transfer did not match the stated hash |
+
+### GET request payload
+
+| offset | size | type  | field        | notes                                |
+|--------|------|-------|--------------|--------------------------------------|
+| 0      | 8    | u64   | offset       | first byte wanted; 0 for a fresh GET |
+| 8      | 8    | bytes | resume_token | first 8 bytes of the expected hash; all zero when offset is 0 |
+| 16     | 2    | u16   | name_len     |                                      |
+| 18     | var  | bytes | name         | UTF-8                                |
+
+An offset greater than the file's size is MALFORMED.
+
+### GET reply payload (type OK)
+
+| offset | size | type  | field        | notes                                |
+|--------|------|-------|--------------|--------------------------------------|
+| 0      | 8    | u64   | total_size   | size of the complete file            |
+| 8      | 8    | u64   | start_offset | first byte actually being sent       |
+| 16     | 32   | bytes | sha256       | hash of the complete file            |
+| 48     | var  | bytes | body         | exactly total_size - start_offset bytes |
+
+The frame's payload_len is 48 + the body length. The body is exempt
+from the payload cap and must be streamed, never buffered.
+
+If the resume_token does not match the file's current hash, the server
+ignores the requested offset and replies with start_offset 0 and the
+current hash: the client's partial data belongs to a file that no
+longer exists here, so it must start over.
+
+### PUT request payload (step 1)
+
+| offset | size | type  | field     | notes                        |
+|--------|------|-------|-----------|------------------------------|
+| 0      | 8    | u64   | file_size | size of the complete file    |
+| 8      | 32   | bytes | sha256    | hash of the complete file    |
+| 40     | 2    | u16   | name_len  |                              |
+| 42     | var  | bytes | name      | UTF-8                        |
+
+### PUT reply payload (step 1, type OK)
+
+| offset | size | type | field         | notes                              |
+|--------|------|------|---------------|------------------------------------|
+| 0      | 8    | u64  | resume_offset | bytes the server already holds; 0 means start from the beginning |
+
+The client then sends exactly file_size - resume_offset raw bytes,
+starting at that offset in its local file. The server verifies the
+finished file against the stated hash and replies with an empty OK
+frame, or ERROR CORRUPT if the hash does not match (in which case the
+partial data is discarded and nothing is published).
+
+### Partial files
+
+A PUT in progress is written to a partial file named from the target
+name and the resume token:
+
+    .<name>.<first 16 hex chars of the hash>.part
+
+Encoding the token in the name is what makes resume safe: a client
+resuming a *different* file cannot find the old partial, because its
+hash produces a different partial name, so it simply starts fresh
+instead of appending onto foreign bytes.
+
+Clients downloading with GET use the same scheme for their own partial
+files, which is how a client knows the resume token to send: it reads
+it back out of the partial's name.
+
+Partial files older than 24 hours are disposable. The server deletes
+stale ones at startup. Partials are never visible to LIST as the
+finished name, and a GET for the finished name while an upload is in
+progress returns NOT_FOUND, because the name is not published until
+the transfer completes and verifies.
+
+### Publication and concurrency
+
+Two upload rules keep concurrent transfers honest:
+
+1. **One writer per partial.** A server rejects a PUT whose partial
+   file is already being written by another live session, with
+   ALREADY_EXISTS. Without this, two clients uploading the same file
+   would interleave appends into one partial.
+2. **Publication is atomic and never overwrites.** When a verified
+   upload is published, the server hard-links the partial to the final
+   name and then unlinks the partial. The link fails if the name was
+   taken while the upload was in flight, and that client gets
+   ALREADY_EXISTS.
+
+The existence check at PUT step 1 is therefore advisory (a courtesy so
+clients fail fast), while the link at publication is authoritative.
+Both can disagree during a race, and when they do the link wins.
+
+### Worked example: HELLO in v3
+
+    52 54 52 56              magic "RTRV"
+    03                       version 3
+    10                       type HELLO
+    00 00 00 00 00 00 00 00  payload_len 0
+
+Only the version byte differs from the v2 example above, which is the
+whole point of having one.
+
+### Worked example: resuming a download
+
+A client holds 3,000,000 bytes of a 5,000,000 byte file in
+`.report.pdf.a1b2c3d4e5f60708.part`, so it states that offset and the
+token it read back out of the partial's own name:
+
+    52 54 52 56 03 01        header, type GET
+    00 00 00 00 00 00 00 1c  payload_len 28
+    00 00 00 00 00 2d c6 c0  offset 3,000,000
+    a1 b2 c3 d4 e5 f6 07 08  resume token
+    00 0a                    name_len 10
+    72 65 70 6f 72 74 2e 70 64 66   "report.pdf"
+
+The server's reply header, when the token still matches:
+
+    52 54 52 56 03 80        header, type OK
+    00 00 00 00 00 1e 84 a0  payload_len 48 + 2,000,000
+    00 00 00 00 00 4c 4b 40  total_size 5,000,000
+    00 00 00 00 00 2d c6 c0  start_offset 3,000,000
+    <32 bytes>               sha256 of the complete file
+
+followed by the remaining 2,000,000 bytes. Had the token not matched,
+start_offset would read 0 and the payload would carry all 5,000,000.
