@@ -41,9 +41,14 @@ jobs:
         run: python -m pytest tests/test_c_interop.py -v
       - name: Valgrind the C client
         run: |
-          # start a server in the background, then run the client under
-          # valgrind: any leak or invalid access fails the job
+          # The interop step rebuilds with AddressSanitizer, and valgrind
+          # cannot run an ASan-instrumented binary (their shadow memory
+          # maps collide), so start from a clean plain build here.
+          make -C c clean && make -C c
           python -m retriever.server 5050 &
           sleep 2
-          valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=all \
+          # default leak kinds only: glibc's getaddrinfo leaves "still
+          # reachable" allocations from loading NSS modules, which are
+          # not ours and not leaks in any useful sense
+          valgrind --error-exitcode=1 --leak-check=full \
                    ./c/retriever 127.0.0.1 5050 list
