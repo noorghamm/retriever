@@ -7,3 +7,5 @@ venv/
 *.part
 downloads/
 *.egg-info/
+c/*.o
+c/retriever
