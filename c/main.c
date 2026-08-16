@@ -111,12 +111,24 @@ static void do_quit(int fd)
 
 static void usage(const char *program)
 {
-    fprintf(stderr, "Usage: %s <host> <port> list\n", program);
+    fprintf(stderr,
+            "Usage:\n"
+            "  %s <host> <port> list\n"
+            "  %s <host> <port> get <filename> [-o local_name]\n"
+            "  %s <host> <port> put <local_file> [remote_name]\n",
+            program, program, program);
+}
+
+/* the last path component, used when no local name is given */
+static const char *basename_of(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
 }
 
 int main(int argc, char **argv)
 {
-    if (argc != 4) {
+    if (argc < 4) {
         usage(argv[0]);
         return EXIT_LOCAL;
     }
@@ -124,8 +136,40 @@ int main(int argc, char **argv)
     const char *port = argv[2];
     const char *command = argv[3];
 
-    if (strcmp(command, "list") != 0) {
-        fprintf(stderr, "error: only 'list' is implemented so far\n");
+    /* work out what each command needs before opening a connection, so
+     * a usage mistake never costs the server a session */
+    const char *name = NULL;      /* remote name for get, local path for put */
+    const char *other = NULL;     /* -o target for get, remote name for put */
+
+    if (strcmp(command, "list") == 0) {
+        if (argc != 4) {
+            usage(argv[0]);
+            return EXIT_LOCAL;
+        }
+    } else if (strcmp(command, "get") == 0) {
+        if (argc != 5 && argc != 7) {
+            usage(argv[0]);
+            return EXIT_LOCAL;
+        }
+        name = argv[4];
+        if (argc == 7) {
+            if (strcmp(argv[5], "-o") != 0) {
+                usage(argv[0]);
+                return EXIT_LOCAL;
+            }
+            other = argv[6];
+        } else {
+            other = basename_of(name);
+        }
+    } else if (strcmp(command, "put") == 0) {
+        if (argc != 5 && argc != 6) {
+            usage(argv[0]);
+            return EXIT_LOCAL;
+        }
+        name = argv[4];
+        other = (argc == 6) ? argv[5] : basename_of(name);
+    } else {
+        fprintf(stderr, "error: unknown command '%s'\n", command);
         usage(argv[0]);
         return EXIT_LOCAL;
     }
@@ -138,10 +182,20 @@ int main(int argc, char **argv)
     int status = EXIT_SUCCESS;
     if (do_hello(fd) < 0) {
         status = EXIT_CONN;
-    } else if (do_list(fd) < 0) {
-        status = EXIT_SERVER;
     } else {
-        do_quit(fd);
+        int rc;
+        if (strcmp(command, "list") == 0) {
+            rc = do_list(fd);
+        } else if (strcmp(command, "get") == 0) {
+            rc = rtrv_do_get(fd, name, other);
+        } else {
+            rc = rtrv_do_put(fd, name, other);
+        }
+        if (rc < 0) {
+            status = EXIT_SERVER;
+        } else {
+            do_quit(fd);
+        }
     }
 
     close(fd);

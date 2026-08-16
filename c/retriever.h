@@ -56,6 +56,11 @@
 /* the largest payload we are willing to hold in memory at once */
 #define RTRV_PAYLOAD_CAP (64 * 1024)
 
+#define RTRV_TOKEN_SIZE  8    /* resume token: first 8 bytes of the hash */
+#define RTRV_GET_META    48   /* u64 total_size, u64 start_offset, 32-byte hash */
+#define RTRV_MAX_NAME    255  /* protocol limit on a filename */
+#define RTRV_PATH_MAX    1024 /* our own limit on a local path */
+
 /* --- byte packing ------------------------------------------------------ */
 
 /*
@@ -119,5 +124,28 @@ int rtrv_read_frame(int fd, uint8_t *type, unsigned char **payload,
  * Layout is u8 reason, u16 message length, then the message bytes.
  */
 void rtrv_report_error(const unsigned char *payload, uint64_t payload_len);
+
+/* --- transfers ---------------------------------------------------------- */
+
+/* Split a path into directory and last component. */
+void rtrv_split_path(const char *path, char *dir, size_t dir_size,
+                     char *base, size_t base_size);
+
+/* Build the partial file name for a transfer: .<name>.<token hex>.part */
+void rtrv_partial_name(const char *dest, const unsigned char *digest,
+                       char *out, size_t out_size);
+
+/*
+ * Find an existing partial for dest. Returns 1 if exactly one was found
+ * (filling in path, size and token), 0 if none, -1 on error.
+ */
+int rtrv_find_partial(const char *dest, char *path_out, size_t path_size,
+                      uint64_t *size_out, unsigned char *token_out);
+
+/* Download remote_name into dest, resuming and verifying. Returns 0 or -1. */
+int rtrv_do_get(int fd, const char *remote_name, const char *dest);
+
+/* Upload local_path as remote_name, resuming and verifying. Returns 0 or -1. */
+int rtrv_do_put(int fd, const char *local_path, const char *remote_name);
 
 #endif /* RETRIEVER_H */
