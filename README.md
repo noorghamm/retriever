@@ -14,7 +14,7 @@ Everything after it is the rebuild. The wire format is documented in
 
 - [x] Phase 0: own repo, protocol documented, test harness, baseline bugs fixed
 - [x] Phase 1: framed protocol v2 with versioning and real error codes
-- [ ] Phase 2: concurrent server, multi-command sessions
+- [x] Phase 2: concurrent server, multi-command sessions
 - [ ] Phase 3: resumable transfers, SHA-256 integrity
 - [ ] Phase 4: C client speaking the same protocol
 
@@ -34,5 +34,10 @@ Run from the repository root:
 
 The integration tests boot the real server on an ephemeral port and speak the
 raw wire protocol at it, including the hostile cases: uploads that die
-mid-transfer, downloads cut short by the peer, and clients that connect and
-send nothing.
+mid-transfer, downloads cut short by the peer, clients that connect and send
+nothing, garbage bytes, and lengths that lie about themselves. The stress
+tests run 20 clients in parallel with byte-for-byte verification, and pin
+down what happens when two of them upload the same filename at once.
+
+See [docs/capture-lab.md](docs/capture-lab.md) for an annotated tcpdump
+capture of a real exchange, read byte by byte against the spec.
