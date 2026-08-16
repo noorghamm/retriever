@@ -9,3 +9,4 @@ downloads/
 *.egg-info/
 c/*.o
 c/retriever
+c/sha256tool
