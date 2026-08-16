@@ -17,6 +17,7 @@ T_LIST = 0x00
 T_GET = 0x01
 T_PUT = 0x02
 T_HELLO = 0x10
+T_QUIT = 0x11
 T_OK = 0x80
 T_ERROR = 0x81
 
@@ -36,6 +37,7 @@ MAX_FILE_SIZE = 1024 ** 3   #1 GiB
 #itself (GET reply bodies) and must not read it through read_frame
 PAYLOAD_CAPS = {
     T_HELLO: 0,
+    T_QUIT: 0,
     T_LIST: 0,
     T_GET: 64 * 1024,
     T_PUT: 64 * 1024,

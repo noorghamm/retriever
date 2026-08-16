@@ -149,6 +149,10 @@ def main(argv=None):
             do_get(sock, args.filename, args.output)
         elif args.command == "put":
             do_put(sock, args.filename, args.remote_name)
+
+        #polite goodbye: QUIT and wait for the server's OK
+        H.write_frame(sock, H.T_QUIT)
+        H.read_frame(sock)
     except H.FrameError as e:
         fail(EXIT_CONN, f"protocol error: {e}")
     except socket.timeout:

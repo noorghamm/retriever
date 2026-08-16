@@ -2,10 +2,15 @@ import sys
 import os
 import socket
 import logging
+import threading
 
 from retriever import protocol as H
 
 log = logging.getLogger("retriever.server")
+
+#how many client sessions may run at once; further connections queue
+#in the TCP accept backlog until a slot frees
+MAX_CLIENTS = 32
 
 
 def create_server_socket(port):
@@ -15,7 +20,7 @@ def create_server_socket(port):
         #prevents "Address already in use" when restarting the server
         srv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv_sock.bind(("0.0.0.0", port))
-        srv_sock.listen(5)
+        srv_sock.listen(64)   #room for connections waiting on a session slot
         log.info("listening on 0.0.0.0:%d", port)
     except OSError as e:
         log.error("cannot bind port %d: %s", port, e)
@@ -28,7 +33,7 @@ def send_error(sock, reason, message):
 
 
 def handle_client(cli_sock, cli_addr):
-    """One v2 conversation: HELLO, one command, reply, close."""
+    """One v2 session: HELLO, any number of commands, QUIT (or close)."""
     peer = "{}:{}".format(*cli_addr)
     try:
         frame_type, _ = H.read_frame(cli_sock)
@@ -36,15 +41,25 @@ def handle_client(cli_sock, cli_addr):
             raise H.FrameError(H.E_MALFORMED, "expected HELLO before any command")
         H.write_frame(cli_sock, H.T_OK)
 
-        frame_type, payload = H.read_frame(cli_sock)
-        if frame_type == H.T_LIST:
-            handle_list(cli_sock, peer)
-        elif frame_type == H.T_GET:
-            handle_get(cli_sock, peer, payload)
-        elif frame_type == H.T_PUT:
-            handle_put(cli_sock, peer, payload)
-        else:
-            raise H.FrameError(H.E_MALFORMED, "expected a command frame")
+        while True:
+            try:
+                frame_type, payload = H.read_frame(cli_sock)
+            except ConnectionError:
+                #closing instead of QUIT is legal, just less polite
+                log.info("%s session ended without QUIT", peer)
+                break
+            if frame_type == H.T_QUIT:
+                H.write_frame(cli_sock, H.T_OK)
+                log.info("%s QUIT", peer)
+                break
+            elif frame_type == H.T_LIST:
+                handle_list(cli_sock, peer)
+            elif frame_type == H.T_GET:
+                handle_get(cli_sock, peer, payload)
+            elif frame_type == H.T_PUT:
+                handle_put(cli_sock, peer, payload)
+            else:
+                raise H.FrameError(H.E_MALFORMED, "expected a command frame")
 
     except H.FrameError as e:
         log.warning("%s protocol violation: %s", peer, e)
@@ -161,18 +176,36 @@ def handle_put(cli_sock, peer, payload):
     log.info("%s PUT %s ok (%d bytes)", peer, name, written)
 
 
+def _serve(cli_sock, cli_addr, gate):
+    try:
+        handle_client(cli_sock, cli_addr)
+    finally:
+        gate.release()
+
+
 def start_server(port):
-    """The main server loop: accept and process one client at a time."""
+    """The main server loop: accept, then hand each client its own thread.
+
+    A semaphore caps concurrent sessions at MAX_CLIENTS; when full, the
+    accept loop simply waits, so excess connections queue in the listen
+    backlog instead of exhausting server resources.
+    """
     srv_sock = create_server_socket(port)
+    gate = threading.Semaphore(MAX_CLIENTS)
     try:
         while True:
             try:
                 cli_sock, cli_addr = srv_sock.accept()
 
-                #a silent peer must not hang the sequential server
+                #a silent peer must not hold a session slot forever
                 cli_sock.settimeout(H.SOCKET_TIMEOUT)
-                log.debug("%s:%s connected", *cli_addr)
-                handle_client(cli_sock, cli_addr)
+                gate.acquire()
+                threading.Thread(
+                    target=_serve,
+                    args=(cli_sock, cli_addr, gate),
+                    name="client-{}:{}".format(*cli_addr),
+                    daemon=True,
+                ).start()
             except Exception as e:
                 log.error("server error: %s", e)
     except KeyboardInterrupt:
@@ -196,6 +229,6 @@ if __name__ == "__main__":
 
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s",
     )
     start_server(port)
