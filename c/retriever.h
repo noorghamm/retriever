@@ -17,6 +17,9 @@
  *  - There is no int.to_bytes(). The big-endian packing that Python
  *    gets from the standard library is written out by hand here, one
  *    shift and mask per byte.
+ *
+ * Build with the supplied Makefile: it sets _POSIX_C_SOURCE, without
+ * which the socket functions are invisible on glibc under -std=c11.
  */
 #ifndef RETRIEVER_H
 #define RETRIEVER_H

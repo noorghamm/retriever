@@ -7,8 +7,15 @@
 # -Wall -Wextra turn on the warnings worth having; -Werror makes them
 # errors, so a warning cannot be ignored into a habit.
 
+# -D_POSIX_C_SOURCE: getaddrinfo, recv, send and close are POSIX, not
+# ISO C. Asking for strict ISO with -std=c11 makes glibc hide every
+# POSIX declaration unless a level is requested. macOS headers are
+# laxer, so without this the code builds on a Mac and fails on Linux.
+# It lives here rather than in a source file so it applies to every
+# translation unit no matter what order the includes are in.
+
 CC      ?= cc
-CFLAGS  ?= -std=c11 -Wall -Wextra -Werror -O2
+CFLAGS  ?= -std=c11 -D_POSIX_C_SOURCE=200112L -Wall -Wextra -Werror -O2
 OBJECTS  = frame.o main.o
 TARGET   = retriever
 
