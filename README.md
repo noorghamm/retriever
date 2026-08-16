@@ -16,7 +16,7 @@ Everything after it is the rebuild. The wire format is documented in
 - [x] Phase 1: framed protocol v2 with versioning and real error codes
 - [x] Phase 2: concurrent server, multi-command sessions
 - [x] Phase 3: resumable transfers, SHA-256 integrity
-- [ ] Phase 4: C client speaking the same protocol
+- [ ] Phase 4: C client speaking the same protocol (LIST works; GET and PUT next)
 
 ## Usage
 
@@ -49,3 +49,17 @@ partway that must resume and verify. Run it with:
 
 See [docs/capture-lab.md](docs/capture-lab.md) for an annotated tcpdump
 capture of a real exchange, read byte by byte against the spec.
+
+## The C client
+
+A second implementation of the same protocol lives in [c/](c/), written
+against the spec rather than against the Python source. It currently
+speaks HELLO, LIST and QUIT.
+
+    make -C c          # build
+    make -C c debug    # rebuild with address/UB sanitizers
+    ./c/retriever 127.0.0.1 5050 list
+
+Interop tests build it and run it against the real Python server, so the
+two implementations are held to the same wire format. CI additionally
+runs it under valgrind.
