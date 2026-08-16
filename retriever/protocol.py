@@ -1,5 +1,8 @@
 import socket
 import os
+import glob
+import time
+import hashlib
 
 #seconds either side waits on a silent peer before giving up
 SOCKET_TIMEOUT = 30
@@ -9,8 +12,19 @@ SOCKET_TIMEOUT = 30
 #---------------------------------------------------------------------------
 
 MAGIC = b"RTRV"
-VERSION = 2
+VERSION = 3
 HEADER_SIZE = 14  #4 magic + 1 version + 1 type + 8 payload_len
+
+HASH_SIZE = 32    #SHA-256
+TOKEN_SIZE = 8    #resume token: first 8 bytes of the hash
+
+#fixed-size prefixes of the v3 payloads (see docs/PROTOCOL.md)
+GET_PREFIX = 8 + TOKEN_SIZE + 2      #offset, token, name_len
+GET_META = 8 + 8 + HASH_SIZE         #total_size, start_offset, hash
+PUT_PREFIX = 8 + HASH_SIZE + 2       #file_size, hash, name_len
+
+#partial files older than this are disposable
+PARTIAL_MAX_AGE = 24 * 3600
 
 #frame types
 T_LIST = 0x00
@@ -29,6 +43,7 @@ E_MALFORMED = 4
 E_UNSUPPORTED_VERSION = 5
 E_INTERNAL = 6
 E_TOO_LARGE = 7
+E_CORRUPT = 8
 
 #largest file_size a PUT may claim; guards the server's disk
 MAX_FILE_SIZE = 1024 ** 3   #1 GiB
@@ -162,6 +177,71 @@ def send_u64(sock,value):
 def recv_u64(sock):
     """Recives an 8 byte unsigned integer from the socket and return it"""
     return int.from_bytes(read_exact_bytes(sock,8),"big")
+
+#---------------------------------------------------------------------------
+#v3 integrity and resume helpers
+#---------------------------------------------------------------------------
+
+def sha256_file(path):
+    """SHA-256 of a whole file, read in chunks so size does not matter."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.digest()
+
+
+def partial_name(name, digest):
+    """Partial file name for a transfer: .<name>.<token hex>.part
+
+    The resume token lives in the filename, so a resume of a *different*
+    file cannot find these bytes and will start fresh instead of
+    appending onto foreign data.
+    """
+    directory, base = os.path.split(name)
+    return os.path.join(directory, ".{}.{}.part".format(base, digest[:TOKEN_SIZE].hex()))
+
+
+def partial_token(path):
+    """Recover the resume token from a partial file's name, or None."""
+    parts = os.path.basename(path).split(".")
+    if len(parts) < 4 or parts[-1] != "part":
+        return None
+    try:
+        token = bytes.fromhex(parts[-2])
+    except ValueError:
+        return None
+    return token if len(token) == TOKEN_SIZE else None
+
+
+def find_partial(name):
+    """Find an existing partial file for this target name, or None."""
+    directory, base = os.path.split(name)
+    pattern = os.path.join(directory, ".{}.*.part".format(glob.escape(base)))
+    matches = glob.glob(pattern)
+    return matches[0] if len(matches) == 1 else None
+
+
+def sweep_partials(max_age=PARTIAL_MAX_AGE):
+    """Delete abandoned partial files in the current directory.
+
+    Called at server startup: a restart is the natural moment to tidy,
+    and it needs no background thread racing live uploads.
+    """
+    removed = 0
+    now = time.time()
+    for path in glob.glob(".*.part"):
+        try:
+            if now - os.path.getmtime(path) > max_age:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            pass   #vanished under us, or not ours to remove
+    return removed
+
 
 def check_filename(name):
     """return true if filename is valid and safe"""

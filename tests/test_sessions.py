@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from conftest import connect_v2, free_port, name_payload
+from conftest import connect_v2, free_port, get_payload, put_payload, read_get, sha
 from retriever import protocol as H
 from retriever import server as server_mod
 from retriever.server import start_server
@@ -22,13 +22,13 @@ def test_many_commands_down_one_connection(server_port, tmp_path):
         assert b"a.txt" in payload
 
         #command 2: GET on the same connection
-        H.write_frame(sock, H.T_GET, name_payload(b"a.txt"))
-        frame_type, size = H.read_frame_header(sock)
+        H.write_frame(sock, H.T_GET, get_payload(b"a.txt"))
+        frame_type, _, body = read_get(sock)
         assert frame_type == H.T_OK
-        assert H.read_exact_bytes(sock, size) == b"alpha"
+        assert body == b"alpha"
 
         #command 3: PUT, still the same connection
-        H.write_frame(sock, H.T_PUT, name_payload(b"b.txt", 4))
+        H.write_frame(sock, H.T_PUT, put_payload(b"b.txt", 4, sha(b"beta")))
         assert H.read_frame(sock)[0] == H.T_OK
         sock.sendall(b"beta")
         assert H.read_frame(sock)[0] == H.T_OK
@@ -51,7 +51,7 @@ def test_quit_closes_the_connection(server_port):
 def test_application_error_does_not_end_the_session(server_port):
     """NOT_FOUND is the file's problem, not the connection's."""
     with connect_v2(server_port) as sock:
-        H.write_frame(sock, H.T_GET, name_payload(b"ghost.txt"))
+        H.write_frame(sock, H.T_GET, get_payload(b"ghost.txt"))
         frame_type, payload = H.read_frame(sock)
         assert frame_type == H.T_ERROR
         assert H.unpack_error(payload)[0] == H.E_NOT_FOUND

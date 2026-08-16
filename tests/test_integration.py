@@ -4,7 +4,8 @@ import time
 
 import pytest
 
-from conftest import connect_v2 as _connect_v2, name_payload as _name_payload
+from conftest import (connect_v2 as _connect_v2, get_payload, put_payload,
+                      read_get, sha)
 from retriever import client
 from retriever import protocol as H
 
@@ -38,7 +39,7 @@ def test_list_of_empty_directory(server_port):
 def test_get_not_found_reports_reason(server_port):
     """v2's whole point: the client can tell WHY a request failed."""
     with _connect_v2(server_port) as sock:
-        H.write_frame(sock, H.T_GET, _name_payload(b"ghost.txt"))
+        H.write_frame(sock, H.T_GET, get_payload(b"ghost.txt"))
         frame_type, payload = H.read_frame(sock)
 
     assert frame_type == H.T_ERROR
@@ -52,11 +53,12 @@ def test_get_streams_file_body(server_port, tmp_path):
     (tmp_path / "data.bin").write_bytes(body)
 
     with _connect_v2(server_port) as sock:
-        H.write_frame(sock, H.T_GET, _name_payload(b"data.bin"))
-        frame_type, size = H.read_frame_header(sock)
-        assert frame_type == H.T_OK
-        received = H.read_exact_bytes(sock, size)
+        H.write_frame(sock, H.T_GET, get_payload(b"data.bin"))
+        frame_type, (total, start, digest), received = read_get(sock)
 
+    assert frame_type == H.T_OK
+    assert (total, start) == (len(body), 0)
+    assert digest == sha(body)      # server states the hash up front
     assert received == body
 
 
@@ -68,7 +70,7 @@ def test_put_to_existing_name_rejected_before_body(server_port, tmp_path):
     existing.write_bytes(original)
 
     with _connect_v2(server_port) as sock:
-        H.write_frame(sock, H.T_PUT, _name_payload(b"photo.png", 1000))
+        H.write_frame(sock, H.T_PUT, put_payload(b"photo.png", 1000, sha(b"x" * 1000)))
         frame_type, payload = H.read_frame(sock)
 
     assert frame_type == H.T_ERROR
@@ -76,25 +78,30 @@ def test_put_to_existing_name_rejected_before_body(server_port, tmp_path):
     assert existing.read_bytes() == original
 
 
-def test_put_dying_mid_body_leaves_nothing(server_port, tmp_path):
-    """A PUT approved but killed mid-body must clean up its debris."""
+def test_put_dying_mid_body_keeps_a_resumable_partial(server_port, tmp_path):
+    """v3 change of meaning: a killed upload KEEPS its partial on purpose,
+    because that is what the next attempt resumes from. What it must never
+    do is publish the finished name."""
+    body = b"x" * 1000
     with _connect_v2(server_port) as sock:
-        H.write_frame(sock, H.T_PUT, _name_payload(b"new.bin", 1000))
+        H.write_frame(sock, H.T_PUT, put_payload(b"new.bin", len(body), sha(body)))
         frame_type, _ = H.read_frame(sock)
         assert frame_type == H.T_OK      # permission to send
-        sock.sendall(b"x" * 100)         # 100 of 1000 promised bytes
+        sock.sendall(body[:100])         # 100 of 1000 promised bytes
     # connection closed mid-body
 
     time.sleep(0.3)
-    leftovers = [p.name for p in tmp_path.iterdir()]
-    assert leftovers == [], f"dead PUT left files behind: {leftovers}"
+    names = [p.name for p in tmp_path.iterdir()]
+    assert "new.bin" not in names, "an unfinished upload was published"
+    assert names == [H.partial_name("new.bin", sha(body))]
+    assert (tmp_path / names[0]).stat().st_size == 100
 
 
 def test_put_stores_complete_file(server_port, tmp_path):
     body = b"\x89PNG\r\n\x1a\n" + b"y" * 500
 
     with _connect_v2(server_port) as sock:
-        H.write_frame(sock, H.T_PUT, _name_payload(b"up.png", len(body)))
+        H.write_frame(sock, H.T_PUT, put_payload(b"up.png", len(body), sha(body)))
         frame_type, _ = H.read_frame(sock)
         assert frame_type == H.T_OK
         sock.sendall(body)
@@ -144,9 +151,12 @@ def test_server_times_out_a_stalled_client(server_port, monkeypatch):
     assert names == set()
 
 
-def test_get_leaves_no_partial_file_when_connection_dies(tmp_path, monkeypatch):
-    """A GET that dies mid-download must not leave a partial file behind."""
+def test_get_dying_mid_download_keeps_a_resumable_partial(tmp_path, monkeypatch):
+    """The client must never present a truncated download as finished,
+    but it does keep the partial so a retry can resume."""
     monkeypatch.chdir(tmp_path)
+    body = b"x" * 1000
+    digest = sha(body)
 
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
@@ -155,12 +165,13 @@ def test_get_leaves_no_partial_file_when_connection_dies(tmp_path, monkeypatch):
 
     def evil_server():
         conn, _ = listener.accept()
-        H.read_frame(conn)                       # HELLO
+        H.read_frame(conn)                        # HELLO
         H.write_frame(conn, H.T_OK)
-        H.read_frame(conn)                       # GET request
-        H.write_frame_header(conn, H.T_OK, 1000) # promise 1000 bytes...
-        conn.sendall(b"x" * 100)                 # ...deliver only 100
-        conn.close()                             # and hang up
+        H.read_frame(conn)                        # GET request
+        H.write_frame_header(conn, H.T_OK, H.GET_META + len(body))
+        conn.sendall(len(body).to_bytes(8, "big") + (0).to_bytes(8, "big") + digest)
+        conn.sendall(body[:100])                  # ...deliver only 100 of 1000
+        conn.close()                              # and hang up
 
     t = threading.Thread(target=evil_server, daemon=True)
     t.start()
@@ -173,5 +184,7 @@ def test_get_leaves_no_partial_file_when_connection_dies(tmp_path, monkeypatch):
     t.join(timeout=5)
     listener.close()
 
-    leftovers = [p.name for p in tmp_path.iterdir()]
-    assert leftovers == [], f"dead GET left files behind: {leftovers}"
+    names = [p.name for p in tmp_path.iterdir()]
+    assert "victim.bin" not in names, "a truncated download was presented as complete"
+    assert names == [H.partial_name("victim.bin", digest)]
+    assert (tmp_path / names[0]).stat().st_size == 100

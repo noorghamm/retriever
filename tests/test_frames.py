@@ -38,7 +38,7 @@ def test_header_bytes_match_spec_worked_example(pair):
     a, b = pair
     H.write_frame(a, H.T_HELLO)
     raw = H.read_exact_bytes(b, H.HEADER_SIZE)
-    assert raw == bytes.fromhex("52545256" "02" "10" "0000000000000000")
+    assert raw == bytes.fromhex("52545256" "03" "10" "0000000000000000")
 
 
 def test_wrong_magic_rejected(pair):
@@ -58,9 +58,10 @@ def test_v1_first_byte_rejected_as_bad_magic(pair):
     assert err.value.reason == H.E_UNSUPPORTED_VERSION
 
 
-def test_wrong_version_rejected(pair):
+@pytest.mark.parametrize("version", [1, 2, 4, 255], ids=["v1", "v2", "future", "max"])
+def test_wrong_version_rejected(pair, version):
     a, b = pair
-    a.sendall(H.MAGIC + bytes([3, H.T_LIST]) + (0).to_bytes(8, "big"))
+    a.sendall(H.MAGIC + bytes([version, H.T_LIST]) + (0).to_bytes(8, "big"))
     with pytest.raises(H.FrameError) as err:
         H.read_frame(b)
     assert err.value.reason == H.E_UNSUPPORTED_VERSION

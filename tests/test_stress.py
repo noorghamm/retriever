@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from conftest import connect_v2, name_payload
+from conftest import connect_v2, get_payload, put_payload, read_get, sha
 from retriever import protocol as H
 
 CLIENTS = 20
@@ -17,7 +17,7 @@ CLIENTS = 20
 
 def _put(sock, name, body):
     """Full two-step PUT. Returns the final frame type."""
-    H.write_frame(sock, H.T_PUT, name_payload(name, len(body)))
+    H.write_frame(sock, H.T_PUT, put_payload(name, len(body), sha(body)))
     frame_type, payload = H.read_frame(sock)
     if frame_type != H.T_OK:
         return frame_type, H.unpack_error(payload)[0]
@@ -29,12 +29,11 @@ def _put(sock, name, body):
 
 def _get(sock, name):
     """Full GET. Returns (frame_type, body_or_reason)."""
-    H.write_frame(sock, H.T_GET, name_payload(name))
-    frame_type, size = H.read_frame_header(sock)
-    payload = H.read_exact_bytes(sock, size) if size else b""
+    H.write_frame(sock, H.T_GET, get_payload(name))
+    frame_type, info, body = read_get(sock)
     if frame_type == H.T_ERROR:
-        return frame_type, H.unpack_error(payload)[0]
-    return frame_type, payload
+        return frame_type, info[0]
+    return frame_type, body
 
 
 def _run_workers(count, worker):
@@ -129,9 +128,10 @@ def test_simultaneous_put_same_name_has_exactly_one_winner(server_port, tmp_path
     assert (tmp_path / "contested.bin").read_bytes() == winners[0][2]
 
 
-def test_parallel_failures_leave_no_debris(server_port, tmp_path):
-    """Half the clients die mid-upload; the survivors' files must be
-    perfect and the dead ones must leave nothing behind."""
+def test_parallel_failures_publish_nothing_and_stay_resumable(server_port, tmp_path):
+    """Half the clients die mid-upload. The survivors' files must be
+    perfect, and the dead ones must publish nothing while leaving exactly
+    one resumable partial each."""
     def worker(i):
         name = f"half-{i:02d}.bin".encode()
         body = f"body-{i:02d}-".encode() * 200
@@ -139,7 +139,7 @@ def test_parallel_failures_leave_no_debris(server_port, tmp_path):
         try:
             if i % 2 == 0:
                 # promise the body, send a third of it, then vanish
-                H.write_frame(sock, H.T_PUT, name_payload(name, len(body)))
+                H.write_frame(sock, H.T_PUT, put_payload(name, len(body), sha(body)))
                 assert H.read_frame(sock)[0] == H.T_OK
                 sock.sendall(body[:len(body) // 3])
                 return None
@@ -151,8 +151,12 @@ def test_parallel_failures_leave_no_debris(server_port, tmp_path):
 
     bodies = _run_workers(CLIENTS, worker)
 
-    survivors = sorted(f"half-{i:02d}.bin" for i in range(CLIENTS) if i % 2)
     names = sorted(p.name for p in tmp_path.iterdir())
-    assert names == survivors, f"dead uploads left debris: {set(names) - set(survivors)}"
+    published = sorted(n for n in names if not n.endswith(".part"))
+    partials = sorted(n for n in names if n.endswith(".part"))
+
+    survivors = sorted(f"half-{i:02d}.bin" for i in range(CLIENTS) if i % 2)
+    assert published == survivors, "an unfinished upload was published"
+    assert len(partials) == CLIENTS // 2, "each dead upload should leave one partial"
     for i in range(1, CLIENTS, 2):
         assert (tmp_path / f"half-{i:02d}.bin").read_bytes() == bodies[i]

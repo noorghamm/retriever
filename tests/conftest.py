@@ -1,4 +1,5 @@
 """Shared fixtures and helpers for the retriever test suite."""
+import hashlib
 import socket
 import threading
 import time
@@ -51,9 +52,37 @@ def connect_v2(port):
     return sock
 
 
-def name_payload(name, size=None):
-    """Build a GET payload (u16 len + name) or PUT payload (+ u64 size)."""
-    payload = len(name).to_bytes(2, "big") + name
-    if size is not None:
-        payload += size.to_bytes(8, "big")
-    return payload
+def sha(body):
+    """SHA-256 digest of some bytes."""
+    return hashlib.sha256(body).digest()
+
+
+def get_payload(name, offset=0, token=None):
+    """v3 GET payload: u64 offset, 8-byte resume token, u16 name_len, name."""
+    token = token if token is not None else b"\0" * H.TOKEN_SIZE
+    return (offset.to_bytes(8, "big") + token
+            + len(name).to_bytes(2, "big") + name)
+
+
+def read_get(sock):
+    """Read a whole v3 GET reply.
+
+    Returns (frame_type, info, body), where info is (total_size,
+    start_offset, digest) on success or (reason, message) on error.
+    """
+    frame_type, payload_len = H.read_frame_header(sock)
+    if frame_type == H.T_ERROR:
+        return frame_type, H.unpack_error(H.read_exact_bytes(sock, payload_len)), b""
+    meta = H.read_exact_bytes(sock, H.GET_META)
+    info = (int.from_bytes(meta[:8], "big"),
+            int.from_bytes(meta[8:16], "big"),
+            meta[16:])
+    body = H.read_exact_bytes(sock, payload_len - H.GET_META)
+    return frame_type, info, body
+
+
+def put_payload(name, size, digest=None):
+    """v3 PUT payload: u64 file_size, 32-byte hash, u16 name_len, name."""
+    digest = digest if digest is not None else b"\0" * H.HASH_SIZE
+    return (size.to_bytes(8, "big") + digest
+            + len(name).to_bytes(2, "big") + name)

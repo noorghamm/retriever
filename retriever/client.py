@@ -57,65 +57,97 @@ def do_get(sock, filename, output=None):
     if os.path.exists(dest):
         fail(EXIT_LOCAL, f"'{dest}' already exists locally, use -o to pick another name")
 
+    #a leftover partial from an interrupted attempt carries its own
+    #resume token in its filename, which is what we offer the server
+    existing = H.find_partial(dest)
+    offset = os.path.getsize(existing) if existing else 0
+    token = (H.partial_token(existing) or b"\0" * H.TOKEN_SIZE) if existing \
+        else b"\0" * H.TOKEN_SIZE
+
     name_bytes = filename.encode("utf-8")
-    H.write_frame(sock, H.T_GET, len(name_bytes).to_bytes(2, "big") + name_bytes)
+    H.write_frame(
+        sock, H.T_GET,
+        offset.to_bytes(8, "big") + token
+        + len(name_bytes).to_bytes(2, "big") + name_bytes,
+    )
 
     frame_type, payload_len = H.read_frame_header(sock)
     if frame_type == H.T_ERROR:
         _, message = _read_error_payload(sock, payload_len)
         fail(EXIT_SERVER, message)
 
-    #download to a temp name, rename only when complete, so a dead
-    #connection never leaves a partial file that looks like a download
-    tmp = dest + ".part"
+    meta = H.read_exact_bytes(sock, H.GET_META)
+    total_size = int.from_bytes(meta[:8], "big")
+    start = int.from_bytes(meta[8:16], "big")
+    digest = meta[16:]
+    partial = H.partial_name(dest, digest)
+
+    if start:
+        print(f"resuming '{filename}' from byte {start}")
+    elif existing:
+        #server offered us a different file; our old bytes are useless
+        os.remove(existing)
+
     try:
-        with open(tmp, "wb") as f:
-            remaining = payload_len
+        with open(partial, "ab" if start else "wb") as f:
+            remaining = total_size - start
             while remaining > 0:
                 chunk = sock.recv(min(65536, remaining))
                 if not chunk:
                     raise ConnectionError("connection lost during download")
                 f.write(chunk)
                 remaining -= len(chunk)
-        os.replace(tmp, dest)
     except Exception as e:
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        fail(EXIT_CONN, f"download failed: {e}")
+        #the partial survives on purpose: it is what makes a retry resumable
+        fail(EXIT_CONN, f"download interrupted: {e} (partial kept for resume)")
 
-    print(f"downloaded '{filename}' ({payload_len} bytes) -> {dest}")
+    if H.sha256_file(partial) != digest:
+        os.remove(partial)
+        fail(EXIT_CONN, "downloaded content did not match the server's hash")
+
+    os.replace(partial, dest)
+    print(f"downloaded '{filename}' ({total_size} bytes, hash verified) -> {dest}")
 
 
 def do_put(sock, filename, remote_name=None):
     if not os.path.isfile(filename):
         fail(EXIT_LOCAL, f"'{filename}' not found locally")
     file_size = os.path.getsize(filename)
+    digest = H.sha256_file(filename)
     remote = remote_name or os.path.basename(filename)
     name_bytes = remote.encode("utf-8")
 
-    #step 1: ask permission with name + size; no body bytes yet
+    #step 1: state size and hash; the server replies with the offset it
+    #already holds, so no body byte is sent twice
     H.write_frame(
         sock, H.T_PUT,
-        len(name_bytes).to_bytes(2, "big") + name_bytes + file_size.to_bytes(8, "big"),
+        file_size.to_bytes(8, "big") + digest
+        + len(name_bytes).to_bytes(2, "big") + name_bytes,
     )
     frame_type, payload = H.read_frame(sock)
     if frame_type == H.T_ERROR:
         _, message = H.unpack_error(payload)
         fail(EXIT_SERVER, message)
+    resume_offset = int.from_bytes(payload[:8], "big")
+    if resume_offset:
+        print(f"resuming upload from byte {resume_offset}")
 
-    #step 2: stream exactly file_size raw bytes, then hear the verdict
+    #step 2: stream the bytes the server is missing, then hear the verdict
     with open(filename, "rb") as f:
-        while True:
-            chunk = f.read(65536)
+        f.seek(resume_offset)
+        remaining = file_size - resume_offset
+        while remaining > 0:
+            chunk = f.read(min(65536, remaining))
             if not chunk:
                 break
             sock.sendall(chunk)
+            remaining -= len(chunk)
 
     frame_type, payload = H.read_frame(sock)
     if frame_type == H.T_ERROR:
         _, message = H.unpack_error(payload)
         fail(EXIT_SERVER, message)
-    print(f"uploaded '{filename}' ({file_size} bytes) -> {remote}")
+    print(f"uploaded '{filename}' ({file_size} bytes, hash verified) -> {remote}")
 
 
 def main(argv=None):
